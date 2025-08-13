@@ -1,0 +1,51 @@
+Projects to be done for the Gould spooler
+
+(1) XGP - x0, y0, FFCUT commands
+
+(2) New graphics protocols:
+    ITS Graphics protocol
+    FR80 protocol
+
+(3) LPT - use variable width mode (?? pretty marginal)
+
+(4) GLPDRW - rewrite PB-LINEN, HORZ-LINE, VERT-LINE in MIDAS
+    GLPFNT - midasize RASTER, does font loading win?
+    GLPSPT - .FASLify
+	     allocate page buffer
+             kill an existing dead spooler on startup doesn't work
+
+(5) GLPSPL
+    maintain queue of failed queue requests to the XGP
+    general problem of whether to retry or punt???
+    XGP-SCAN in MIDAS
+
+
+TESTING:
+
+test LPT mode
+     error recovery
+     fortran mode
+     noheading mode
+     heading
+     skip
+*    ffcut
+     nocut (autcut)
+     page params (lftmar, botmar, topmar, nlines, width)
+test ARDS/TEK, DPLT mode
+     scale
+     rotate
+     thick
+     lftmar, botmar
+     kset (or _font)
+test XGP mode
+     rotate
+     lftmar, topmar, botmar, vsp, lsp, size
+     kset, ksubset
+     skip
+test general features
+     xgp queuing, output
+     delete
+     copies
+     background
+     nocut  (autcut)
+     error recovery, error messages

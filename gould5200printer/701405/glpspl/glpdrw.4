@@ -1,0 +1,145 @@
+
+;;;	This file contains functions for drawing points, lines, and regions
+;;; in the page buffer for output to the Gould (and XGP).
+;;; Part of the Gould spooler.  (SHOULD BE REWRITTEN IN .FASL MIDAS)
+
+(eval-when (eval compile) (load "dsk:lisp;umlmac fasl"))
+
+(declare (special pb-size-y pb-size-x clear-page-buffer pb)
+	 (fixnum pb-size-y pb-size-x x y x0 y0 x1 y1 mask n i j)
+	 (notype (vertical-line fixnum fixnum fixnum)
+		 (horizontal-line fixnum fixnum fixnum)
+		 (pb-point fixnum fixnum) (clear-page-buffer)
+		 (pb-pointn fixnum fixnum fixnum)
+		 (pb-line fixnum fixnum fixnum fixnum)
+		 (pb-linen fixnum fixnum fixnum fixnum fixnum)
+		 (change-area fixnum fixnum fixnum fixnum fixnum)
+		 (pb-arg-check fixnum fixnum)))
+
+;Returns t iff x and y lie in array
+
+(defun pb-arg-check (x y) (not (or (< y 0.) (not (< y (lsh pb-size-y 5.)))
+				   (< x 0.) (not (< x pb-size-x)))))
+
+(defun clear-page-buffer nil (fillarray pb '(0)) (setq clear-page-buffer t)) 
+
+
+;;;  Vertical and horizontal lines.  Points.
+
+;;Draws a vertical line (does its own checking) - note y <= y1
+
+(defun vertical-line (x x1 y) 
+   (setq clear-page-buffer nil)
+   (unless (or (< y 0.) (not (< y (lsh pb-size-y 5.))))
+	   (do ((mask (lsh 1. (- 35. (boole 1. 31. (prog2 nil y
+							  (setq y (lsh y -5.))))))))
+	       ((> x x1))
+	       (unless (or (< x 0.) (not (< x pb-size-x)))
+		       (store (arraycall fixnum pb y x)
+			      (boole 7. (arraycall fixnum pb y x) mask)))
+	       (setq x (1+ x)))))
+
+;;Draws a horizontal line (does its own checking) - note y <= y1
+
+(defun horizontal-line (x y y1)
+    (setq clear-page-buffer nil)
+    (unless (or (< x 0.) (not (< x pb-size-x)))
+	    (do ((mask (boole 1.
+			      (lsh -1.
+				   (- (boole 1. 31.
+					     (prog2 nil y
+						    (setq y (lsh y -5.))))))
+			      -16.)
+		       -16.)
+		 (stop-y (lsh y1 -5.)))
+		((> y stop-y))
+		(declare (fixnum stop-y))
+		(if (= y stop-y)
+		    (setq mask (boole 1. mask
+				      (lsh -1. (- 35. (boole 1. 31. y1))))))
+	    (unless (or (< y 0.) (not (< y pb-size-y)))
+		(store (arraycall fixnum pb y x)
+		       (boole 7. (arraycall fixnum pb y x) mask)))
+	    (setq y (1+ y)))))
+
+;;Turns on point at x and y
+
+(defun pb-point (x y) 
+   (setq clear-page-buffer nil)
+   (if (pb-arg-check x y)
+       (store (arraycall fixnum pb (lsh y -5.) x)
+	      (boole 7. (arraycall fixnum pb (lsh y -5.) x)
+		     (lsh 1. (- 35. (boole 1. 31. y))))))
+   T)
+
+;;; Areas and thick lines.
+
+(declare (fixnum lox hix loy hiy z k ylim boole))
+
+; changes specified area (does argument checking)
+; boole = 4 to clear
+;         5 is no-op
+;         6 to complement
+;         7 to blacken
+
+(defun change-area (lox hix loy hiy boole)	; note args must be ordered
+       (do ((k (lsh loy -5.) (1+ k))
+	    (ylim (lsh hiy -5.))
+	    (mask (boole 1. -16. (lsh -1. (- (boole 1. loy 31.)))) -16.))
+	   ((> k ylim))
+	   (if (= k ylim)
+	       (setq mask (boole 1. mask
+				 (lsh -16. (- 31. (boole 1. hiy 31.))))))
+	   (unless (or (< k 0.) (not (< k pb-size-y)))
+		   (do ((j lox (1+ j)))
+		       ((= j hix))
+		       (unless (or (< j 0.) (not (< j pb-size-x)))
+			       (store (arraycall fixnum pb k j)
+				      (boole boole (arraycall fixnum pb k j)
+					     mask)))))))
+
+(defun pb-pointn (x y n)
+       (setq n (1- n)) (change-area x (+ x n) y (+ y n) 7.))
+
+(declare (fixnum sign begy endy xx))
+
+;; Draws line of thickness n
+
+(defun pb-linen (x0 y0 x1 y1 n) 
+   (setq x1 (- x1 x0) y1 (- y1 y0) n (abs (1- n)))
+   (let ((horiz (> (abs y1) (abs x1))) (sign 1.))
+	(and (or (and horiz (< y1 0.)) (and (not horiz) (< x1 0.)))
+	     (setq y0 (+ y0 y1) x0 (+ x0 x1) y1 (- y1) x1 (- x1)))
+	(cond (horiz (and (< x1 0.) (setq x0 (+ x0 n) x1 (- x1) sign -1.)))
+	      (t (and (< y1 0.) (setq y0 (+ y0 n) y1 (- y1) sign -1.))
+		 (setq y1 (prog2 nil x1 (setq x1 y1)))))
+	(do ((x 0. (1+ x))
+	     (xx (- (1+ n)) (1+ xx))
+	     (begy)
+	     (endy))
+	    ((= xx x1))
+	    (setq begy (cond ((< xx 0.) 0.)
+			     ((= xx 0.) (// (+ x1 y1) 2. x1))
+			     (t (// (+ (* (1+ (* 2 xx)) y1) x1) 2. x1)))
+		  endy (+ n (cond ((not (< x x1)) y1)
+				  ((= x1 0.) (// (+ x1 y1) 2. x1))
+				  (t (// (+ (* (1+ (* 2 x)) y1) x1)
+					 2.
+					 x1)))))
+	    (cond (horiz
+		   (horizontal-line (+ x0 (* sign x))
+				    (+ y0 begy) 
+				    (+ y0 endy)))
+		  (t
+		   (vertical-line (+ x0 begy)
+				  (+ x0 endy)
+				  (+ y0 (* sign x))))))))
+
+
+(defun pb-line (x0 y0 x1 y1) (pb-linen x0 y0 x1 y1 1.))
+
+
+;; Local Modes:
+;; Mode: LISP
+;; Comment Col: 40
+;; END:

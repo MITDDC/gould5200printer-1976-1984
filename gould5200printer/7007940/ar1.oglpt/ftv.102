@@ -1,0 +1,806 @@
+;; -*-Lisp-*-
+
+;;;		FTV
+;;;
+;;;	This file contains functions for generating bit-map arrays for
+;;; output to the Gould (and XGP under some circumstances).  It is used
+;;; by the Gould spooler.
+;;;	It has the following main groups of functions:
+;;;		1. Font loading and processing (rotating, dumping, reloading).
+;;;			a. Font loading proper
+;;;			b. Accessing of font array
+;;;		2. Creation and accessing of bit array.
+;;;		3. Writing of graphics into the bit array.
+;;;		4. Writing of characters into the bit array.
+
+(declare (special tv-size-y tv-size-x tv-clear)
+	 (fixnum tv-size-y tv-size-x)
+	 (notype (vertical-line fixnum fixnum fixnum)
+		 (horizontal-line fixnum fixnum fixnum)
+		 (tv-point fixnum fixnum) (tv-clear)
+		 (tv-pointn fixnum fixnum fixnum)
+		 (tv-line fixnum fixnum fixnum fixnum)
+		 (tv-linen fixnum fixnum fixnum fixnum fixnum)
+		 (change-area fixnum fixnum fixnum fixnum fixnum)
+		 (tv-arg-check fixnum fixnum))
+	 (array* (fixnum tv 2.))
+	 (newio t))
+
+;;; Some tv array primitives.
+
+
+
+(or (boundp 'tv-size-y) (setq tv-size-y 65.))
+(or (boundp 'tv-size-x) (setq tv-size-x 1700.))
+
+(declare (fixnum x y))
+
+;Returns t iff x and y lie in array
+
+(defun tv-arg-check (x y) (not (or (< y 0.) (not (< y (lsh tv-size-y 5.)))
+				   (< x 0.) (not (< x tv-size-x)))))
+
+(defun tv-clear nil (array tv fixnum tv-size-y tv-size-x) (setq tv-clear t)) 
+
+(or (get 'tv 'array) (tv-clear))
+
+
+;;;  Vertical and horizontal lines.  Points.
+
+(declare (fixnum x x1 y mask))
+
+
+;;Draws a vertical line (does its own checking) - note y <= y1
+
+(defun vertical-line (x x1 y) 
+       (setq tv-clear nil)
+       (or (< y 0.) (not (< y (lsh tv-size-y 5.)))
+	   (do ((mask (lsh 1. (- 35. (boole 1. 31. (prog2 nil y
+							  (setq y (lsh y -5.))))))))
+	       ((> x x1))
+	       (or (< x 0.) (not (< x tv-size-x))
+		   (store (tv y x) (boole 7. (tv y x) mask)))
+	       (setq x (1+ x)))))
+
+(declare (fixnum x y x1 mask stop-y))
+
+;;Draws a horizontal line (does its own checking) - note y <= y1
+
+(defun horizontal-line (x y y1)
+    (setq tv-clear nil)
+    (or (< x 0.) (not (< x tv-size-x))
+	(do ((mask (boole 1.
+			  (lsh -1.
+			       (- (boole 1. 31. (prog2 nil y (setq y (lsh y -5.))))))
+			  -16.)
+		   -16.)
+	     (stop-y (lsh y1 -5.)))
+	    ((> y stop-y))
+	    (and (= y stop-y)
+		 (setq mask (boole 1. mask (lsh -1. (- 35. (boole 1. 31. y1))))))
+	    (or (< y 0.) (not (< y tv-size-y))
+		(store (tv y x) (boole 7. (tv y x) mask)))
+	    (setq y (1+ y)))))
+
+(declare (fixnum x y))
+
+;;Turns on point at x and y
+
+(defun tv-point (x y) 
+       (setq tv-clear nil)
+       (and (tv-arg-check x y)
+	    (store (tv (lsh y -5.) x)
+		   (boole 7. (tv (lsh y -5.) x) (lsh 1. (- 35. (boole 1. 31. y))))))
+       nil) 
+
+
+
+;;; Areas and thick lines.
+
+
+(declare (fixnum lox hix loy hiy z k ylim mask j boole))
+
+; changes specified area (does argument checking)
+; boole = 4 to clear
+;         5 is no-op
+;         6 to complement
+;         7 to blacken
+
+(defun change-area (lox hix loy hiy boole)	; note args must be ordered
+       (do ((k (lsh loy -5.) (1+ k))
+	    (ylim (lsh hiy -5.))
+	    (mask (boole 1. -16. (lsh -1. (- (boole 1. loy 31.)))) -16.))
+	   ((> k ylim))
+	   (and (= k ylim)
+		(setq mask (boole 1. mask (lsh -16. (- 31. (boole 1. hiy 31.))))))
+	   (or (< k 0.) (not (< k tv-size-y))
+	       (do ((j lox (1+ j))) ((= j hix))
+		   (or (< j 0.) (not (< j tv-size-x))
+		       (store (tv k j) (boole boole (tv k j) mask)))))))
+
+(declare (fixnum x y n))
+
+(defun tv-pointn (x y n)
+       (setq n (1- n)) (change-area x (+ x n) y (+ y n) 7.))
+
+(declare (fixnum x0 y0 x1 y1 n sign begy endy x xx))
+
+;; Draws line of thickness n
+
+(defun tv-linen (x0 y0 x1 y1 n) 
+       (setq x1 (- x1 x0) y1 (- y1 y0) n (abs (1- n)))
+       ((lambda (horiz sign)
+		(and (or (and horiz (< y1 0.)) (and (not horiz) (< x1 0.)))
+		     (setq y0 (+ y0 y1) x0 (+ x0 x1) y1 (- y1) x1 (- x1)))
+		(cond (horiz (and (< x1 0.) (setq x0 (+ x0 n) x1 (- x1) sign -1.)))
+		      (t (and (< y1 0.) (setq y0 (+ y0 n) y1 (- y1) sign -1.))
+			 (setq y1 (prog2 nil x1 (setq x1 y1)))))
+		(do ((x 0. (1+ x))
+		     (xx (- (1+ n)) (1+ xx))
+		     (begy)
+		     (endy))
+		    ((= xx x1))
+		    (setq begy (cond ((< xx 0.) 0.)
+				     ((= xx 0.) (// (+ x1 y1) 2. x1))
+				     (t (// (+ (* (1+ (* 2 xx)) y1) x1) 2. x1)))
+			  endy (+ n (cond ((not (< x x1)) y1)
+					  ((= x1 0.) (// (+ x1 y1) 2. x1))
+					  (t (// (+ (* (1+ (* 2 x)) y1) x1)
+						 2.
+						 x1)))))
+		    (cond (horiz
+			   (horizontal-line (+ x0 (* sign x))
+					    (+ y0 begy) 
+					    (+ y0 endy)))
+			  (t
+			   (vertical-line (+ x0 begy)
+					  (+ x0 endy)
+					  (+ y0 (* sign x)))))))
+	(> (abs y1) (abs x1)) 1.))
+
+(defun tv-line (x0 y0 x1 y1) (tv-linen x0 y0 x1 y1 1.))
+
+;; Loading fonts.
+
+;Format of font in array (as obtained by e.g. (loadfont '((dsk fonts) 25fg kst)))
+;
+;Words 0-177
+;	Word n has index in array of character data for ascii code n,
+;	or zero if that character not in the font.
+;
+;Word 200
+;	Height of characters
+;
+;Word 201
+;	Base line (measured from top)
+;
+;Word 202
+;	Rotation (0 = right way up, measured anti-clockwise)
+;
+;Other words are pointed to by the pointers in words 0-177.
+;The data pointed to are:
+;	Left kern, adjusted by cpa
+;	Raster width in bits
+;	Character width in bits
+;	Character matrix packed in high 32. bits of the word;
+;	 each scan line begins at a word boundary
+;
+;MIT font format
+;
+;Words 0-1
+;	Kstid
+;	byte (9) column_position_adjustment,base_line (18) height
+;			base line # rasters from top of character matrix
+;Remainder of file:  one block of data for each character
+;	user_id
+;			not used 4/10/74 but low order bit must be 1 
+;			-1 marks end of file
+;	left_kern,,code
+;			left kern = amount to move left from the
+;			logical left end of the character to the left edge
+;			of the raster.  + means move left, - move right.
+;			left kern always 0 for cmu
+;	raster_width,,character_width
+;			raster width always 0 for cmu
+;			character width = amount that the line bit position
+;			is increased by printing the character.
+;	character_matrix
+;			the matrix is stored 4 8-bit bytes per word so that
+;			ildb with 8-bit byte size gets successive bytes.
+;			the bits are bit reversed in each byte 
+;			bit of character in low order bit of byte).
+;			the matrix is stored row by row. each row beginning
+;			at a byte boundary
+
+(declare (special tv-size-y tv-size-x)
+	 (fixnum tv-size-y tv-size-x)
+	 (fixnum (ftyo fixnum notype fixnum fixnum)
+		 (ftyo1 fixnum notype fixnum fixnum fixnum fixnum fixnum)
+		 (lshc fixnum fixnum fixnum) (circ fixnum)
+		 (raster-rotate notype fixnum notype fixnum fixnum fixnum))
+	 (notype (ftyo2 fixnum notype fixnum fixnum fixnum fixnum fixnum)
+		 (raster notype fixnum fixnum fixnum fixnum fixnum)
+		 (font-compact notype) (loadfont1 notype) (loadfont notype)
+		 (loadfont2 notype)
+		 (raster-compact notype fixnum fixnum fixnum fixnum fixnum fixnum)
+		 (font-rotate notype) (font-rotate1 notype)
+		 (font-rotate2 notype fixnum) (font-invert notype)
+		 (raster-invert notype fixnum notype fixnum fixnum fixnum))
+	 (*expr lshc loadfont))
+
+(declare (newio t)
+	 (special real-ar-len)
+	 (fixnum mask word cpa height id index oid width wpl i j k endmask offset
+		 nword ary1pos arylen curlen real-ar-len)
+	 (notype (array-chk fixnum)))
+
+;Loads font from file and returns array pointer.  Sticks -1 in zeroth
+; element if file is bad, -2 if font can't be found.
+
+(defun loadfont (file)
+       ((lambda (ary arylen mask word cpa height)
+	 (cond ((probef file)
+		(setq file (open file '(dsk fixnum in))
+		      word (in file) word (in file))
+		(store (arraycall fixnum ary 129.) (boole 1. (lsh word -18.) 511.))
+		(store (arraycall fixnum ary 128.)
+		       (setq height (boole 1. word mask)))
+		(cond ((< word 0.) (setq cpa (boole 7. -1._27. (lsh word -27.))))
+		      (t (setq cpa (lsh word -27.))))
+		(do ((id (in file) (in file)) (index 131.)
+		     (oid 128. id) (width) (wpl))
+		    ((or (not (oddp id)) (= id -1.))
+		     (*rearray ary 'fixnum arylen)
+		     ;; Adjust array length.
+		     (or (oddp id) (store (arraycall fixnum ary 0.) -1.))
+		     nil)
+		    (array-chk ary (setq arylen (+ index 3.)))  ;Assure space.
+		    (setq word (in file)
+			  id (boole 1. word mask))
+		    (cond ((not (< id oid))	    ;Chars stored in reverse order
+			   (store (arraycall fixnum ary 0.) -1.) (return nil)))
+		    (store (arraycall fixnum ary id) index)
+		    (cond ((< word 0.) (setq word (boole 7. -1._18.
+							 (lsh word -18.))))
+			  (t (setq word (lsh word -18.))))
+		    (store (arraycall fixnum ary index) (+ cpa word))
+		    (setq word (in file) width (lsh word -18.))
+		    (cond ((= width 0.)		; even space has raster width of 1
+			   (store (arraycall fixnum ary 0.) -1.) (return nil)))
+		    (store (arraycall fixnum ary (1+ index)) width)
+		    (store (arraycall fixnum ary (+ 2. index)) (boole 1. word mask))
+		    (setq wpl (lsh (+ 31. width) -5.) index (+ 3. index))
+		    (array-chk ary (setq arylen (+ index (* height wpl))))
+		    (setq width (1+ (boole 1. 3. (+ 3. (lsh (+ 7. width) -3.))))
+			  width (lsh width 3.) word (circ (in file)))
+		    (do ((i 0. (1+ i)) (oword 0.)
+			 (k (1- (lsh (+ 3 (* height (+ (lsh width -3.)
+						       (lsh (1- wpl) 2.)))) -2.)))
+			 (endmask (lsh -1. (- 36. width)))
+			 (offset 32. (+ offset width)))
+			((= i height))
+			(cond ((> offset 32.)
+			       (setq offset (- offset 32.) oword (lsh word -4.)
+				     word (cond ((= k 0.) 0.)
+						(t (setq k (1- k))
+						   (circ (in file)))))))
+			(do ((j 1. (1+ j)) (nword))
+			    ((> j wpl))
+			    (setq nword (lsh (lshc oword word offset) 4.))
+			    (and (= j wpl) (setq nword (boole 1. nword endmask)))
+			    (store (arraycall fixnum ary index) nword)
+			    (setq index (1+ index))
+			    (or (= j wpl) (setq oword (lsh word -4.)
+						word (cond ((= k 0.) 0.)
+							   (t (setq k (1- k))
+							      (circ (in file)))))))))
+		(close file))
+	       (t (store (arraycall fixnum ary 0) -2.)))
+	  ary)
+	(array nil fixnum (setq real-ar-len 2000)) 0	;Reasonable initial size
+	(lsh -1. -18.) 0. 0. 0.))
+
+;; Array-chk mediates expansions of the font array.  Since *rearray is quite
+;; slow, it is advantageous to allocate in blocks larger than known to be needed.
+;; The special variable real-ar-len keeps track of the length of the array.
+;; The argument length is the desired (minimum) length of the array.  Note
+;; that this will only work on one array at a time.  If it is desired to make
+;; it more general, real-ar-len should be replaced by a call to arraydims.
+;; Note also that when the array is created, real-ar-len must be initialized
+;; correctly.
+
+(defun array-chk (array length)
+      (cond ((> real-ar-len length))
+	    (t (*rearray array 'fixnum
+		 (setq real-ar-len
+		       (+ real-ar-len
+			  (max 300
+			       (- length real-ar-len)
+			       (// real-ar-len 10.))))))))
+
+
+;;;  Some Lap code for efficiency.
+
+; Takes a fixnum arg and return the number with the bits in each 8-bit byte reversed
+(lap circ subr)
+	(args circ (nil . 1))
+	(push p (% 0 0 fix1))
+	(movni r 4)
+	(hrlzi d 441001)
+ lp	(ildb t d)
+	(circ t -10)
+	(aojl r lp)
+	(lsh tt 4)
+	(popj p)
+nil
+
+; Combined shift, shifts combination of first two args by 3rd arg and returns
+; high order 36. bits
+(lap lshc subr)
+(args lshc (nil . 3))
+	(push p (% 0 0 fix1))
+	(move tt 0 a)
+	(move d 0 b)
+	(move r 0 c)
+	(lshc tt 0 r)
+	(popj p)
+nil 
+
+
+;;; Loadfont plus checking.
+
+(declare (fixnum ch len i ind wpl j k height end beg lsb msb word))
+
+; Calls loadfont and check the left kerns
+
+(defun loadfont1 (file)
+       ((lambda (ary)
+		(do ((ch 0. (1+ ch)) (ind) (wpl) (width)
+		     (height (arraycall fixnum ary 128.)))
+		    ((= ch 128.) (font-compact ary))
+		    (setq ind (arraycall fixnum ary ch))
+		    (cond ((< ind 0.) (return ary))  ; exit - bad font
+			  ((not (= ind 0.))
+			   (setq width (arraycall fixnum ary (1+ ind))
+				 wpl (lsh (+ 31. width) -5.))
+			   ;compute left kern
+			   (do ((k 0. (1+ k)) (beg -1.) (word))
+			       ((or (= k wpl) (not (< beg 0.)))
+				(cond ((< beg 0.)
+				       (store (arraycall fixnum ary (1+ ind)) 0.))
+				      ((> beg 0.)
+				       (store (arraycall fixnum ary ind)
+					      (- (arraycall fixnum ary ind) beg))
+				       (store (arraycall fixnum ary (1+ ind))
+					      (- width beg))
+				       (raster-compact ary (+ ind 3.) wpl 0 (1- height)
+						       beg width))))
+			       (do ((i 0. (1+ i)) (msb 0.))
+				   ((or (= msb 32.) (= i height))
+				    (and (> msb 0.)
+					 (setq beg (+ (lsh k 5.) (- 32. msb))))
+				    nil)
+				   (setq word
+					 (arraycall fixnum ary (+ ind 3. (* i wpl) k))
+					 msb (max msb (haulong (lsh word -4.))))))))))
+	(loadfont file)))
+
+
+;;; Some compaction routines.
+
+(declare (fixnum index wpl y1 y2 x1 x2 offset wpl1 i j f g j1))
+
+;Takes array pointer (ary and index) and compacts words assuming wpl words
+;per line and throwing away everything outside the box x1 to x2 and y1 to y2.
+;This is used to throw out white space.
+
+(defun raster-compact (ary index wpl y1 y2 x1 x2)
+       ((lambda (offset wpl1)
+		(setq x1 (lsh x1 -5.) x2 (lsh x2 -5.))
+		(do ((i y1 (1+ i))) ((> i y2))
+		    (do ((j x1 (1+ j)) (f 0 g) (g) (j1 -1. (1+ j1)))
+			((or (> j (1+ x2)) (= j1 wpl1)))
+			(setq g (cond ((> j x2) 0.)
+				      (t (arraycall fixnum ary (+ index (* i wpl) j)))))
+			(cond ((not (< j1 0.))
+			       (store (arraycall fixnum ary (+ index (* i wpl1) j1))
+				      (lsh (lshc (lsh f -4.) g offset) 4.)))))))
+	(boole 1. x1 31.) (1+ (lsh (- x2 x1) -5.))))
+
+(declare (fixnum i rot height index index1 width j num))
+
+;Compacts the font in place.  Character n can be removed by setting (ary n) to 0
+;and calling font-compact.  Assumes that array is filled in reverse ascii order.
+;Returns the array pointer.
+
+(defun font-compact (ary)
+       (do ((i 127. (1- i)) (rot (arraycall fixnum ary 130.))
+	    (height (arraycall fixnum ary 128.))
+	    (index) (index1 131.) (width 0.))
+	   ((< i 0.) (*rearray ary 'fixnum index1))
+	   (setq index (arraycall fixnum ary i))
+	   (cond ((not (= index 0.))
+		  (store (arraycall fixnum ary i) index1)
+		  (setq width (arraycall fixnum ary (1+ index)))
+		  (do ((j 0. (1+ j))
+		       (num (+ 3. (* (cond ((oddp rot) width) (t height))
+				     (lsh (+ 31. (cond ((oddp rot) height) (t width)))
+					  -5.)))))
+		      ((= j num) (setq index1 (+ index1 num)) nil)
+		      (store (arraycall fixnum ary (+ index1 j))
+			     (arraycall fixnum ary (+ index j))))))))
+ 
+
+
+;;; Printing characters into TV.
+
+(declare (fixnum ch x y findex kern width height baseline rot))
+
+;Prints ch of font at x and y.  Returns char width in bits.
+
+(defun ftyo (ch font x y)
+       (ftyo1 ch font x y (arraycall fixnum font 128.) (arraycall fixnum font 129.)
+	      (arraycall fixnum font 130.)))
+
+;As above but you supply the extra args (which need only be
+; computed when the font changes).
+
+(defun ftyo1 (ch font x y height baseline rot)
+       ((lambda (findex)
+		(cond ((= findex 0.) 0.)
+		      (t (ftyo2 findex font x y height baseline rot)
+			 (arraycall fixnum font (+ findex 2.)))))
+	(arraycall fixnum font ch)))
+
+(defun ftyo2 (findex font x y height baseline rot)
+       (or (zerop findex)
+	   ((lambda (kern width)
+		    (cond ((= rot 3.)
+			   (setq y (+ y baseline (- height)) x (- x kern)))
+			  ((= rot 0.)
+			   (setq y (- y kern) x (- x baseline)))
+			  ((= rot 1.)
+			   (setq y (- y baseline) x (+ x kern (- width))))
+			  (t (setq y (+ y kern (- width)) x (+ x baseline (- height)))))
+		    (cond ((oddp rot) (raster font (+ findex 3.) height width x y))
+			  (t (raster font (+ findex 3.) width height x y))))
+	    (arraycall fixnum font findex)
+	    (arraycall fixnum font (1+ findex))))
+       nil)
+
+(declare (fixnum index width ht x y j offset wd k f g wdy))
+
+;Prints the raster pattern at index in ary assuming a pattern size of height
+; and width top left corner goes at x and y.  Raster pattern will be
+; correctly clipped if it is wants to go out of the scan array.
+
+(defun raster (ary index width ht x y)
+       (or (= width 0.)
+	   (setq width (lsh (+ 31. width) -5.) tv-clear nil)
+	   (do ((j 0 (1+ j))
+		(wd (lsh y -5.))
+		(offset (- 32. (boole 1. y 31.))))
+	       ((= j ht))
+	       (or (< x 0.) (not (< x tv-size-x))
+		   (do ((k 0 (1+ k))
+			(f 0 g)
+			(g (arraycall fixnum ary index)
+			   (cond ((not (< k (1- width))) 0)
+				 (t (arraycall fixnum ary (+ index (1+ k)))))))
+		       ((> k width))
+		       ((lambda (wdy)
+				(or (< wdy 0.) (not (< wdy tv-size-y))
+				    (store (tv wdy x)
+					   (boole 7. (tv wdy x)
+						  (lsh (lshc (lsh f -4.) g offset)
+						       4.)))))
+			(+ wd k))))
+	       (setq x (1+ x)
+		     index (+ index width)))))
+
+;; Font rotation.
+
+(declare (fixnum height rot ch index index1 width))
+
+;Rotates a font clockwise returning the new array.
+
+(defun font-rotate (ary)
+       ((lambda (height rot ary1)
+		(store (arraycall fixnum ary1 130.) (\ (+ 3. rot) 4.))
+		(do ((ch 127. (1- ch)) (index) (index1 131.))
+		    ((< ch 0.)
+		     (store (arraycall fixnum ary1 128.) height)
+		     (store (arraycall fixnum ary1 129.)
+			    (arraycall fixnum ary 129.))
+		     ary1)
+		    (setq index (arraycall fixnum ary ch))
+		    (cond ((< index 0.) (store (arraycall fixnum ary1 0)
+					       (arraycall fixnum ary 0))
+					(return ary1))  ; exit - bad font
+			  ((not (= index 0.))
+			   (store (arraycall fixnum ary1 ch) index1)
+			   (*rearray ary1 'fixnum (+ index1 3.))
+			   (store (arraycall fixnum ary1 index1)
+				  (arraycall fixnum ary index))
+			   (store (arraycall fixnum ary1 (+ 2. index1))
+				  (arraycall fixnum ary (+ 2. index)))
+			   ((lambda (width)
+				    (store (arraycall fixnum ary1 (1+ index1))
+					   (arraycall fixnum ary (1+ index)))
+				    (setq index1
+					  (cond ((oddp rot)
+						 (raster-rotate ary (+ index 3.)
+								ary1 (+ index1 3.)
+								height width))
+						(t (raster-rotate ary (+ index 3.)
+								  ary1 (+ index1 3.)
+								  width height)))))
+			    (arraycall fixnum ary (1+ index)))))))
+	(arraycall fixnum ary 128.) (arraycall fixnum ary 130.)
+	(array nil fixnum 131.)))
+
+;Rotates a font by 180 degrees.
+
+(defun font-invert (ary)
+       ((lambda (height rot ary1)
+		(fillarray ary1 ary)
+		(store (arraycall fixnum ary1 130.) (\ (+ 2. rot) 4.))
+		(do ((ch 127. (1- ch)) (index))
+		    ((< ch 0.) ary1)
+		    (setq index (arraycall fixnum ary ch))
+		    (cond ((< index 0.) (return ary1)) ; exit - bad font
+			  ((not (= index 0.))
+			   ((lambda (width)
+				    (setq index (+ index 3.))
+				    (cond ((oddp rot)
+					   (raster-invert ary index ary1 index
+							  height width))
+					  (t (raster-invert ary index ary1 index
+							    width height))))
+			    (arraycall fixnum ary (1+ index)))))))
+	(arraycall fixnum ary 128.) (arraycall fixnum ary 130.)
+	(apply '*array (cons nil (arraydims ary)))))
+
+
+;Rotates font to rot.  Returns old array if font already at that rotation
+;otherwise creates new array.  Never destroys old array.
+
+(declare (fixnum rot))
+
+(defun font-rotate2 (ary rot)
+       (do ((first t nil)
+	    (rot1 (arraycall fixnum ary 130.) (arraycall fixnum ary 130.)))
+	   ((= rot1 rot) ary)
+	   (setq ary (prog2 nil (cond ((oddp (- rot1 rot)) (font-rotate ary))
+				      (t (font-invert ary)))
+			    (or first (*rearray ary))))))
+
+
+;; Loading fonts with rotation and GLDFNT handling.
+
+;Loads and rotates font
+
+(defun loadfont2 (l)
+       ((lambda (ary rot)
+		(cond ((null ary) nil)
+		      (t (do ((rot1 0. (arraycall fixnum ary 130.)))
+			     ((= rot1 rot) ary)
+			     (setq ary (prog2 nil (cond ((oddp (- rot1 rot))
+							 (font-rotate ary))
+							(t (font-invert ary)))
+					      (*rearray ary)))))))
+	(loadfont1 (cdr l)) (car l)))
+
+;Handles loading and storing of fonts from gldfnt
+
+(defun loadfont* (file l)
+       ((lambda (base *nopoint ary)
+		(cond ((probef file)
+		       (setq file (open file '(in fixnum dsk))
+			     ary (array nil fixnum (caddar (directory (list file)
+								      '(words)))))
+		       (fillarray ary file) (close file) ary)
+		      (t (setq ary (loadfont2 l))
+			 (cond ((not (< (arraycall fixnum ary 0.) 0.))
+				(setq file (open file '(out fixnum dsk)))
+				(fillarray file ary)
+				(close file)))
+			 ary)))
+	10. t nil))
+
+;Rotates raster pattern size width x height in ary at index clockwise, by 90 degrees
+;and puts it in ary1 at index1.  Assumes the relevant elements of ary1 are zeroed
+;out.  Enlarges array if necessary. Returns next index of ary1 .
+
+(declare (fixnum wpl1 nindex1))
+(defun raster-rotate (ary index ary1 index1 width height)
+ ((lambda (wpl wpl1 nindex1)
+	  (setq nindex1 (+ index1 (* width wpl1)))
+	  (cond ((> nindex1 (cadr (arraydims ary1)))
+		 (*rearray ary1 'fixnum nindex1)))
+	  (do ((j 0. (1+ j))
+	       (mask (lsh 1._35. (- (boole 1. (1- height) 31.))) (lsh mask 1.))
+	       (k1 (1- wpl1)))
+	      ((= j height))
+	      (and (= mask 0.) (setq mask 1._4. k1 (1- k1)))
+	      (do ((k 0. (1+ k)) (j1))
+		  ((= k wpl))
+		  (setq j1 (lsh k 5.))
+		  (do ((word (arraycall fixnum ary (+ index (* j wpl) k))
+			     (lsh word 1.)))
+		      ((= word 0.))
+		      (cond ((< word 0.)
+			     (store (arraycall fixnum ary1
+					       (+ index1 (* j1 wpl1) k1))
+				    (boole 7. mask
+					   (arraycall fixnum ary1
+						      (+ index1 (* j1 wpl1) k1))))))
+		      (setq j1 (1+ j1)))))
+	  nindex1)
+  (lsh (+ 31. width) -5.) (lsh (+ 31. height) -5.) 0.))
+
+;Like raster-rotate only it rotates by 180 degrees.  Returns nil. 
+;Assumes enough room in ary1
+
+(declare (fixnum i1 k1 (circ1 fixnum)))
+(defun raster-invert (ary index ary1 index1 width height)
+       (setq width (+ width 31.))
+       ((lambda (offset)
+		(setq width (lsh width -5.)
+		      index1 (+ index1 (* width (1- height))))
+		(do ((i 0. (1+ i)) (i1 (1- height) (1- i1))) ((< i1 0))
+		    (do ((k 0 (1+ k)) (k1 (1- width) (1- k1))
+			 (f 0 g)
+			 (g 0))
+			((< k1 0))
+			(setq g (arraycall fixnum ary (+ index k)))
+			(store (arraycall fixnum ary1 (+ index1 k1))
+			       (circ1 (lsh (lshc (lsh f -4) g offset) 4.))))
+		    (setq index (+ index width)
+			  index1 (- index1 width))))
+	(1+ (boole 1. width 31.))))
+
+; takes a fixnum arg and return the number with the high 32. bits reversed
+(lap circ1 subr)
+	(args circ1 (nil . 1))
+	(push p (% 0 0 fix1))
+	(move t 0 a)
+ 	(lsh t -4)
+	(circ t -40)
+	(lsh tt 4)
+	(popj p)
+nil 
+
+
+;Functions for manipulating fonts reading files etc.
+
+(declare (special current-font current-font-no current-width current-baseline
+		  current-height current-rot max-no-fonts)
+	 (fixnum current-font-no current-width current-baseline current-height
+		 current-rot max-no-fonts)
+	 (fixnum (char-width fixnum fixnum))
+	 (notype (switch-font fixnum) (font fixnum notype fixnum))
+	 (*lexpr user-error))
+
+(setq max-no-fonts 32.)   ;allows 16. fonts in two rotations
+(array font-table t max-no-fonts)
+(array font-names t max-no-fonts)
+
+;;; sets all fonts to default to fonts;25fg kst
+(defun font-init ()
+       (font 0. '((dsk fonts) 25fg kst) 0)
+       (fillarray 'font-table (ncons (font-table 0)))
+       (fillarray 'font-names (ncons (font-names 0))))
+
+(declare (fixnum num rot i))
+
+(defun font (num file rot)
+       (cond ((and (not (< num 0.)) (< num max-no-fonts))
+	      (setq rot (boole 1. rot 3.)
+		    file (cons rot (mergef file
+					   (cond ((= num 0.)
+						  '((dsk fonts) 25fg kst))
+						 (t (cdr (font-names (1- num))))))))
+	      (cond ((null (probef (cdr file)))
+		     (user-error '|Can't find font |
+				 (namestring (cdr file))
+				 '| - printing aborted|)
+		     (throw 'xgp-error)))
+	      (store (font-table num) (font-locate file))
+	      (store (font-names num) file)
+	      file)))
+
+;File is cons of rot and file-name.  Returns array-pointer if font with correct
+;rotation found, else returns expreesion which if eval'ed returns array-pointer.
+(declare (special stored-fonts))
+(defun font-locate (file)
+       (cond ((not (boundp 'stored-fonts))
+	      (setq stored-fonts
+		    (cond ((and (probef '((dsk gldfnt) |___FNT| fonts))
+				(directory (list '((dsk gldfnt) |___FNT| fonts))))
+			   ((lambda (file)
+				    (prog2 nil
+					   (nreverse (read file))
+					   (close file)))
+			    (open '((dsk gldfnt) |___FNT| fonts) '(in))))))))
+       (do ((i 0 (1+ i)))
+	   ((= i max-no-fonts)
+	    ((lambda (l)
+	      (cond (l (list 'loadfont* (list 'quote (list '(second gldfnt)
+							   '|___FNT| (length l)))
+			     (list 'quote file)))
+		    (t ((lambda (rot)
+				(setq file (cdr file))
+				(do ((i 0 (1+ i)))
+				    ((= i max-no-fonts)
+				     (list 'loadfont2 (list 'quote (cons rot file))))
+				    (cond ((equal file (cdr (font-names i)))
+					   (cond ((eq (typep (font-table i)) 'array)
+						  (return (list 'font-rotate2
+								(list 'quote
+								      (font-table i))
+								rot)))))
+					  ((or (atom (font-table i))
+					       (eq (car (font-table i)) 'loadfont2)))
+					  ((eq (car (font-table i)) 'font-rotate2)
+					   (return (list 'font-rotate2
+							 (list 'quote (cadr
+								       (font-table i)))
+							 rot))))))
+	     (car file)))))
+	     (member file stored-fonts)))
+	   (cond ((and (equal file (font-names i))
+		       (eq (typep (font-table i)) 'array))
+		  (return (font-table i))))))
+		  
+(declare (fixnum num))
+(defun switch-font (num)
+       (cond ((or (< num 0.) (not (< num max-no-fonts)))
+	      (user-error num '| --too large for font number--listing aborted|)
+	      (throw nil xgp-error))
+	     ((null (font-table num))
+	      (cond ((= num 0.)
+		     (user-error '|Font 0 undefined - listing aborted|)
+		     (throw nil xgp-error))
+		    (t (user-error '|Font | num '| undefined, using font 0|)
+		       (switch-font 0.))))
+;	     ((and (eq (font-table num) 'autoload)
+;		   (null (probef (cdr (font-names num)))))
+;	      (user-error '|Can't find font | (namestring (cdr (font-names num)))
+;			  '| - listing aborted|)
+;	      (throw nil xgp-error))
+	     (t (cond ((not (eq (typep (font-table num)) 'array))
+		       ;have one last look for the font
+		       (store (font-table num) (font-locate (font-names num)))
+		       (or (eq (typep (font-table num)) 'array)
+			   (store (font-table num) (eval (font-table num))))
+		       (cond ((< (arraycall fixnum (font-table num) 0.) 0.)
+			      (cond ((= (arraycall fixnum (font-table num) 0.) -2.)
+				     (user-error '|Can't find font |
+						 (namestring (cdr (font-names num)))
+						 '| - listing aborted|))
+				    (t
+				     (user-error '|Error while trying to load |
+						 (namestring (cdr (font-names num)))
+						 '| - listing aborted|)))
+			      (store (font-table num) nil)
+			      (store (font-names num) nil)
+			      (throw nil xgp-error)))))
+		(setq current-font (font-table num) current-font-no num
+		      current-rot (arraycall fixnum current-font 130.)
+		      current-width (char-width num 32.)
+		      current-height (arraycall fixnum current-font 128.)
+		      current-baseline (arraycall fixnum current-font 129.))))
+       nil)
+
+(declare (fixnum fontno ch))
+
+(defun char-width (fontno ch)
+       ((lambda (font)
+		(setq ch (arraycall fixnum font ch))
+		(cond ((= ch 0.) 0.)
+		      (t (arraycall fixnum font (+ 2 ch)))))
+	(font-table fontno)))
+
+(defun ftyo* (ch x y)
+       (ftyo1 ch current-font x y current-height current-baseline current-rot))

@@ -1,0 +1,19 @@
+
+JLK@MIT-MC 11/28/78 14:13:50
+To: R11-USERS at MIT-MC
+The LPT (line printer) mode on the GOULD now works in the new program.
+You get this by :GTPL <file>/H
+where <file> is a file specification.  It is recommended that this
+form be used for large outputs of data or long programs, as it will
+print much faster than the XGP simulation mode.  There are several
+new features with /H.  First, page numbering is now done as the
+default.  To turn off page numbering, use /H[N].  Also, FORTRAN
+lisings (with printer control commands in column 1) can be
+printed using /H[F].  In FORTRAN mode,  page numbering is normally
+turned off.  It get it turned back on, use /H[F L].
+Note, in the above, FORTRAN, FORT, FTN, or FOR can be used instead of
+F and LIST or LISTING can be used instead of L.
+Several other options exist which will be documented under :INFO GTPL
+(line truncation, treatment of control chars, page heading specification,
+etc.)
+

@@ -1,0 +1,4 @@
+:tctyp tty 17 print padcr=0 padlf=0 padtab=0 -%tpcbs -%tpors
+:tctyp tty 26 print padcr=0 padlf=0 padtab=0 +%tpcbs -%tpors
+:tctyp tty 25 vt52 +%tpcbs
+

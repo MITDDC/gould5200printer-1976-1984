@@ -1,0 +1,200 @@
+TITLE LISP BIGPRINT
+;CODE GOBBLED FROM @ PROGRAM, HACKED TO RUN UNDER LISP
+
+.INSRT SYS:.FASL DEFS 
+
+.ENTRY BIGPRINT SUBR 2
+
+MOBY:	$ NCALL 1,6BIT
+	PUSH FXP,TT
+	JSP T,0PUSH-3
+	MOVEI A,.ATOM T
+	$ CALL 1,NOINTERRUPT
+
+.BEGIN BIGPRT
+CH=1 ? A=2 ? B=3 ? C=11 ? D=12 ? L=4 ? R=5
+;;; H HAS A SIXBIT WORD; BIGPRINT IT TO THE OUTPUT FILE.
+;;; CLOBBERS A,B,C,D,R,L,CH,CC AND BIT 1 OF F (ALTERS SP).
+
+	SETZM (FXP)
+	MOVE CH,-3(FXP)
+	MOVEI A,21.-6
+REPEAT 5,[
+	TDNE CH,[<-1>_<-6*<1+.RPCNT>>]
+	ADDI A,21.
+]		;END OF REPEAT 5
+	CAMLE A,@.SPECIAL LINEL
+	SETOM -1(FXP)		;BIT 1 OF F IS 1 FOR 2 CHARS/GROUP, 0 FOR 3
+	MOVEI L,7
+MOBY1:	MOVEI R,3		;LOOP POINT FOR 3-LINE GROUPS
+		;ALL 3 LINES IN A LINE GROUP ARE IDENTICAL
+		;L (= LINE-GRP #) AFFECTS HOW EACH CHAR PRINTS
+MOBY2:	$ CALL 0,TERPRI		;LOOP FOR LINE WITHIN A GROUP
+	MOVE B,-3(FXP)		;PRINT THE WORD ON EACH LINE
+	SETOM -2(FXP)		;CC IS -1 FOR 1ST CHAR OF WORD
+MOBY3:	SETZ A,			;LOOP FOR CHAR IN WORD
+	LSHC A,6		;GET NEXT CHAR IN A
+	LDB C,MOBY9-1(L)	;5 BIT BYTE SAYING WHAT GOES IN EACH CHAR-GRP
+	MOVEI D,7
+ 	AOSE -2(FXP)		;AVOID SPACES BEFORE 1ST CHAR ON LINE
+	 JRST MOBY4
+	LSH C,2
+	SUBI D,2
+MOBY4:	MOVEI CH,40		;EACH CHAR-GROUP HAS 2 OR 3
+	TRNE C,100		; CHARS, ALL THE SAME
+	MOVEI CH,40(A)
+	MOVEM CH,(FXP)
+REPEAT 2,[	MOVEI 1,(FXP)
+		$ CALL 1,TYO
+]
+	SKIPE -1(FXP)
+	 JRST MOBY5
+	MOVEI 1,(FXP)
+	$ CALL 1,TYO
+MOBY5:	LSH C,1
+	SOJG D,MOBY4		;PRINT NEXT CHAR-GRP
+	JUMPN B,MOBY3		;PRINT NEXT CHAR
+	SOJG R,MOBY2		;PRINT NEXT LINE IN LINE-GRP
+	SOJG L,MOBY1		;PRINT NEXT LINE-GRP
+	SETZB 2,3
+	SETZB 4,5
+	MOVEI 1,.ATOM NIL
+	SUB FXP,[4,,4]
+	$ JCALL 1,NOINTERRUPT
+
+
+MOBY9:	000500,,CHARS(A)	;TABLE OF BYTE POINTERS FOR
+	050500,,CHARS(A)	; FETCHING SUCCESSIVE 5-BIT
+	120500,,CHARS(A)	; BYTES FROM THE CHARS TABLE
+	170500,,CHARS(A)
+	240500,,CHARS(A)
+	310500,,CHARS(A)
+	360500,,CHARS(A)
+
+IF1,	CHARS:	BLOCK 100
+
+IF2,[
+
+;;; HAIRY SYMBOLS FOR DEFINING CHARACTERS
+
+RADIX 2.
+IRPC V,,[.X]J,,[01]
+IRPC W,,[.X]K,,[01]
+IRPC X,,[.X]L,,[01]
+IRPC Y,,[.X]M,,[01]
+IRPC Z,,[.X]N,,[01]
+V!!W!!X!!Y!!Z==J!!K!!L!!M!!N
+TERMIN
+TERMIN
+TERMIN
+TERMIN
+TERMIN
+RADIX 8.
+
+;;; HAIRY MACROS FOR DEFINING 8. CHARACTERS AT A TIME
+
+DEFINE $$ Q/
+IRPS X,,[Q]Y,,[$0,$1,$2,$3,$4,$5,$6,$7]
+Y==X
+TERMIN
+%%CNT==0
+TERMIN
+
+DEFINE %% Q/
+IRPS X,,[Q]Y,,[$0,$1,$2,$3,$4,$5,$6,$7]
+Y==<Y_5>+X
+TERMIN
+%%CNT==%%CNT+1
+TERMIN
+
+DEFINE ......
+IRPS Y,,[$0,$1,$2,$3,$4,$5,$6,$7]
+	Y
+EXPUNGE Y
+TERMIN
+IFN <.-CHARS>&7, .ERR WRONG LENGTH TABLE
+IFN %%CNT-6, .ERR WRONG NUMBER OF %%'S
+EXPUNGE %%CNT
+TERMIN
+
+CHARS:
+$$	.....	..X..	.X.X.	.X.X.	..X..	XX..X	..X..	...X.
+%%	.....	..X..	.X.X.	.X.X.	.XXXX	XX..X	.X.X.	..X..
+%%	.....	..X..	.....	XXXXX	X.X..	...X.	..X..	.X...
+%%	.....	..X..	.....	.X.X.	.XXX.	..X..	.X...	.....
+%%	.....	..X..	.....	XXXXX	..X.X	.X...	X.X.X	.....
+%%	.....	.....	.....	.X.X.	XXXX.	X..XX	X..X.	.....
+%%	.....	..X..	.....	.X.X.	..X..	X..XX	.XX.X	.....
+......
+
+;;;	IF2
+$$	...X.	.X...	.....	.....	.....	.....	.....	....X
+%%	..X..	..X..	X.X.X	..X..	.....	.....	.....	....X
+%%	.X...	...X.	.XXX.	..X..	.....	.....	.....	...X.
+%%	.X...	...X.	XXXXX	XXXXX	.....	XXXXX	.....	..X..
+%%	.X...	...X.	.XXX.	..X..	.....	.....	.....	.X...
+%%	..X..	..X..	X.X.X	..X..	..X..	.....	.XX..	X....
+%%	...X.	.X...	.....	.....	.X...	.....	.XX..	X....
+......
+$$	.XXX.	..X..	.XXX.	.XXX.	...X.	XXXXX	.XXX.	XXXXX
+%%	X...X	.XX..	X...X	X...X	..XX.	X....	X...X	....X
+%%	X..XX	..X..	....X	....X	.X.X.	X....	X....	....X
+%%	X.X.X	..X..	...X.	.XXX.	X..X.	XXXX.	XXXX.	...X.
+%%	XX..X	..X..	..X..	....X	XXXXX	....X	X...X	..X..
+%%	X...X	..X..	.X...	X...X	...X.	X...X	X...X	.X...
+%%	.XXX.	.XXX.	XXXXX	.XXX.	...X.	.XXX.	.XXX.	X....
+......
+$$	.XXX.	.XXX.	.....	.....	...X.	.....	.X...	.XXX.
+%%	X...X	X...X	.....	.....	..X..	.....	..X..	X...X
+%%	X...X	X...X	.XX..	.XX..	.X...	XXXXX	...X.	...X.
+%%	.XXX.	.XXXX	.XX..	.XX..	X....	.....	....X	..X..
+%%	X...X	....X	.....	.....	.X...	XXXXX	...X.	..X..
+%%	X...X	...X.	.XX..	..X..	..X..	.....	..X..	.....
+%%	.XXX.	XXX..	.XX..	.X...	...X.	.....	.X...	..X..
+......
+$$	.XXX.	..X..	XXXX.	.XXX.	XXX..	XXXXX	XXXXX	.XXX.
+%%	X...X	.X.X.	X...X	X...X	X..X.	X....	X....	X...X
+%%	X.XXX	X...X	X...X	X....	X...X	X....	X....	X....
+%%	X.X.X	X...X	XXXX.	X....	X...X	XXXX.	XXXX.	X.XXX
+%%	X.XXX	XXXXX	X...X	X....	X...X	X....	X....	X...X
+%%	X....	X...X	X...X	X...X	X..X.	X....	X....	X...X
+%%	.XXXX	X...X	XXXX.	.XXX.	XXX..	XXXXX	X....	.XXX.
+......
+$$	X...X	.XXX.	..XXX	X...X	X....	X...X	X...X	.XXX.
+%%	X...X	..X..	...X.	X..X.	X....	XX.XX	XX..X	X...X
+%%	X...X	..X..	...X.	X.X..	X....	X.X.X	X.X.X	X...X
+%%	XXXXX	..X..	...X.	XX...	X....	X.X.X	X..XX	X...X
+%%	X...X	..X..	...X.	X.X..	X....	X...X	X...X	X...X
+%%	X...X	..X..	X..X.	X..X.	X....	X...X	X...X	X...X
+%%	X...X	.XXX.	.XX..	X...X	XXXXX	X...X	X...X	.XXX.
+......
+$$	XXXX.	.XXX.	XXXX.	.XXX.	XXXXX	X...X	X...X	X...X
+%%	X...X	X...X	X...X	X...X	..X..	X...X	X...X	X...X
+%%	X...X	X...X	X...X	X....	..X..	X...X	X...X	X...X
+%%	XXXX.	X...X	XXXX.	.XXX.	..X..	X...X	X...X	X.X.X
+%%	X....	X.X.X	X.X..	....X	..X..	X...X	X...X	X.X.X
+%%	X....	X..X.	X..X.	X...X	..X..	X...X	.X.X.	XX.XX
+%%	X....	.XX.X	X...X	.XXX.	..X..	.XXX.	..X..	X...X
+......
+$$	X...X	X...X	XXXXX	.XXX.	X....	.XXX.	..X..	.....
+%%	X...X	X...X	....X	.X...	X....	...X.	.XXX.	..X..
+%%	.X.X.	.X.X.	...X.	.X...	.X...	...X.	X.X.X	.X...
+%%	..X..	..X..	XXXXX	.X...	..X..	...X.	..X..	XXXXX
+%%	.X.X.	..X..	.X...	.X...	...X.	...X.	..X..	.X...
+%%	X...X	..X..	X....	.X...	....X	...X.	..X..	..X..
+%%	X...X	..X..	XXXXX	.XXX.	....X	.XXX.	..X..	.....
+......
+
+]		;END OF IF2
+.END
+.ENTRY 6BIT SUBR 2
+	PUSH P,[FIX1]
+	$ CALL 1,NCONS
+	MOVE B,A
+	MOVEI A,.ATOM #0 
+	$ CALL 2,CONS
+	$ NCALL 1,SQOZ|
+	MOVE TT,R
+	POPJ P,
+END
+

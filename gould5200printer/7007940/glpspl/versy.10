@@ -1,0 +1,114 @@
+; -*- Lisp -*-
+(declare (special pb pb-size-y pb-size-x versatec-x versatec-y
+		  versatec-large versatec-or versatec-offx versatec-offy
+		  scan-file gould-connection)
+	 (fixnum i j i1 i2 j1 j2 pb-size-y pb-size-x
+		 versatec-x versatec-y versatec-offx versatec-offy
+		 (versatec-comb-or fixnum fixnum fixnum fixnum)
+		 (versatec-collaps-or fixnum)
+		 (versatec-comb-and fixnum fixnum)
+		 (versatec-collaps-and fixnum)
+		 (versatec-out fixnum fixnum notype))
+	 (notype (versatec-out-end fixnum notype))
+	 (array* (fixnum pb 2)))
+
+(eval-when (eval compile)				; macros and compile time constants
+	   (cond ((not (status feature lspmac))		;load macro package
+		  (fasload lspmac fasl glpspl)))	;if not loaded
+	   (setsyntax '/# 'splicing '+internal-/#-macro))	;turn on # macro
+
+	   (defun initialize-for-versatec ()
+		  (if gould-connection (gould-disconnect))
+		  (setq pb-size-y 66. pb-size-x 1700.)
+		  (reconfigure-page-buffer-array 66. 1700.)
+		  (setq scan-file '((third /.glpr/.) > ver))
+		  (setq versatec-x 32. versatec-y 800.
+			versatec-offx 0. versatec-offy 50.
+			versatec-large nil versatec-or nil))
+
+							; The format for Versatec scan files is:
+							; Each scan line consists of 32. words.  Only the 32. highest bits
+							; of each word are used.
+							; A formfeed is signified by the last word of a scan line being odd.
+							; Some data compression is implemented by converting
+							; a sequence of <n> 0's to a single word of <n>*16.+2.
+							; Similarly a formfeed is given by a 1 in the first word of a column
+							; (this is expanded to 31. 0's and a 1).
+
+(defun output-versatec-scan-file ()
+       (setq scan-file (car (errset (open scan-file '(out fixnum block)) nil)))
+       (unless (filep scan-file) (*throw 'spooler-toplevel nil))
+       (let ((zcnt 0))
+	    (cond (versatec-large
+		   (do ((j 0 (1+ j))) ((= j versatec-y))
+		       (do ((i 0 (1+ i)) ) ((= i versatec-x))
+			   (setq zcnt (versatec-out
+				       (arraycall fixnum pb
+						  (+ i versatec-offx)
+						  (+ j versatec-offy))
+				       zcnt scan-file)))))
+		  (versatec-or
+		   (do ((j 0 (1+ j)) (j1 0) (j2 0)) ((= j versatec-y))
+		       (setq j1 (+ versatec-offy (* 2 j)) j2 (1+ j1))
+		       (do ((i 0 (1+ i)) (i1 0) (i2 0)) ((= i versatec-x))
+			   (setq i1 (+ versatec-offx (* 2 i)) i2 (1+ i1))
+			   (setq zcnt
+				 (versatec-out
+				  (versatec-comb-or (arraycall fixnum pb i1 j1)
+						    (arraycall fixnum pb i2 j1)
+						    (arraycall fixnum pb i1 j2)
+						    (arraycall fixnum pb i2 j2))
+				  zcnt scan-file)))))
+		  (t (do ((j 0 (1+ j)) (j1 0)) ((= j versatec-y))
+			 (setq j1 (+ versatec-offy (* 2 j)))
+			 (do ((i 0 (1+ i)) (i1 0) (i2 0)) ((= i versatec-x))
+			     (setq i1 (+ versatec-offx (* 2 i)) i2 (1+ i1))
+			     (setq zcnt
+				   (versatec-out
+				    (versatec-comb-and (arraycall fixnum pb i1 j1)
+						       (arraycall fixnum pb i2 j1))
+				    zcnt scan-file))))))
+	    (versatec-out-end zcnt scan-file))
+       (cond ((not (> (filepos scan-file) 2))
+	      (deletef scan-file))
+	     (t (close scan-file))))
+
+(defun versatec-comb-or (i1 i2 j1 j2)
+       (setq i1 (boole 7. i1 j1)
+	     i2 (boole 7. i2 j2)
+	     i1 (versatec-collaps-or i1) 
+	     i2 (versatec-collaps-or i2))
+       (boole 7. (lsh i1 16.) i2))
+
+(defun versatec-collaps-or (i1)
+       (setq i1 (boole 7. i1 (lsh i1 -1.)))
+       (versatec-collaps-and i1))
+
+(defun versatec-comb-and (i1 i2)
+       (setq i1 (versatec-collaps-and i1)
+	     i2 (versatec-collaps-and i2))
+       (boole 7. (lsh i1 16.) i2))
+(defun versatec-collaps-and (i1)
+       (cond ((= i1 0) 0)
+	     (t (setq i1 (boole 1. i1 #x+555555550)
+		      i1 (boole 7. i1 (lsh i1 -1.))
+		      i1 (boole 1. i1 #x+333333330)
+		      i1 (boole 7. i1 (lsh i1 -2.))
+		      i1 (boole 1. i1 #x+0f0f0f0f0)
+		      i1 (boole 7. i1 (lsh i1 -4.))
+		      i1 (boole 1. i1 #x+00ff00ff0)
+		      i1 (boole 7. i1 (lsh i1 -8.)))
+		(boole 1. i1 #x+0000ffff0))))
+(defun versatec-out (i1 zcnt file)
+       (cond ((= i1 0) (setq zcnt (1+ zcnt)))
+	     (t (cond ((> zcnt 0)
+		       (out file 
+			    (cond ((= zcnt 1) 0)
+				  (t (boole 7. 2. (lsh zcnt 4.)))))
+		       (setq zcnt 0)))
+		(out file i1)))
+       zcnt)
+
+(defun versatec-out-end (zcnt file)
+       (versatec-out 1 zcnt file)
+       nil)

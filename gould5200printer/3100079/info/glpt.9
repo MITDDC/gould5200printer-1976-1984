@@ -1,0 +1,386 @@
+-*-TEXT-*-
+This file documents the spooling system for the Gould electrostatic
+graphics printer in 38-244 (MIT).
+
+File: GLPT		Node: Top	 Up: (Dir)	   Next: Basic
+
+The GLPT system consists of a set of programs for submitting files to
+be printed on the Gould electrostatic graphics printer in 38-244
+(occassionally it is also used to produce SCAN files for the XGP).  It
+is very general, allowing many output options, and interpreting several
+file types (ASCII, XGP commands, ARDS and Tektronix graphics, bit image
+files, etc.).  (All of these nodes are not yet written).
+
+* Menu:
+
+* Basic Use: Basic		How to simply list ASCII files, files
+				containing XGP commands, or plot files.
+				Examples.
+
+* Command Syntax: Commands	The general command syntax and summary
+				of the capabilities available.
+
+* File Types: Types		Description of flags indicating the
+				input file type and options associated
+				with these flags.
+
+* Options::			Other options that control spooler
+				functions.
+
+* Spooling System: System	A description of the spooling system.
+
+* Status Info: Status		Obtaining information on the status of
+				the processing queue, the spooler and
+				the unspooler.  Also using PEEK to get
+				more information. 
+
+* XGP output: XGP		How to produce ;SCAN files for the XGP
+				and why you might want to do this.
+
+* Spooler Control: Control	Launching and killing the spooler and
+				the spooler.
+
+File: GLPT	Node: Basic	Previous: Top	Up: Top  Next: Commands
+
+Basic Use of the GLPT (Gould Lineprinter) spooler.
+
+The program GTPL (for Gould TPL) is used to queue requests for printing
+files on the Gould printer.  It is used by typing :GTPL <commands> to
+DDT, where <commands> is a combination of file specifications and flags
+describing what file(s) to print and how.  See the next node (Commands)
+for a detailed description of the command syntax.  Here, some simple
+examples are given of common command specifications:
+
+To simply make a fast listing of a file of ordinary text, say,
+JLK;PLAIN FILE, do
+	:GTPL JLK;PLAIN FILE/H
+The /H tells the spooler to use the hardware character mechanism in
+the GOULD, which is the fastest way to get listings.  This will print
+your file in a lineprinter style, on pages 11 inches wide by 8 1/2
+inches high. 
+
+To make a listing with header lines on the top of each page, consisting
+of a page number, the file name, the date, and time, do
+	:GTPL JLK;PLAIN FILE/H[LIST]
+(this does not work yet, but will eventually).
+
+To make an XGP style listing (with the page in a standard 8 1/2 by 11
+format) just specify a file name (i.e. this is the default): 
+	:GTPL JLK;PLAIN FILE
+If there are XGP ; commands in the beginning of the file, as there are
+if the file is the output of some document processor (@, PUB, TJ6, TXJ,
+etc), this specifies that the file should be printed as it would on the
+XGP (interpreting XGP commands appearing in the text, etc.)  otherwise
+a listing is made with page headers like the ;LIST mode on the XGP. 
+Putting a /L after the file specification does the same thing.  Putting
+a /X after it instead, suppresses the page header type listing in the
+case where there are no ;  commands in the file, giving you a plain
+listing, but in an 8 1/2 X 11 format page.
+
+To list a plain file using some font like 25FR as the main font, do
+	:GTPL JLK;PLAIN FILE/L[25FR]
+	or
+	:GTPL JLK;PLAIN FILE/X[25FR]
+depending on which style of listing you want.  As with the XGP, the
+default font is 25FG.  Note, you should probably use a fixed width
+font to get good results for this type of listing.
+
+If you decide that you really didn't want the file to be printed, you
+can cancel (Unqueue) the request by
+	:GTPL JLK;BAD REQUEST/U
+(Currently, this only removes files from the processing queue, but not
+the unspooling queue.  Hopefully this will be fixed.)
+
+To print a file of graphics commands (ARDS or Tektronix format) do
+for ARDS files
+	:GTPL JLK;PLOT FILE/A
+or for Tektronix files
+	:GTPL JLK;TEK FILE/T
+
+To print a bit image file, as might be produced by GSCNV from PLT files
+from the DRAW program, do
+	:GTPL JLK;1 SCN/I
+Note that the default is to delete such files once they are printed
+since they generally are quite large, so add a /-K at the end if you
+want it saved (or copy the file first). 
+
+To print more then one file at a time, just separate several file specs
+by comma's.  Also using * as a first or second file name means print
+all files on the specified directory with the corresponding second or
+first file name.  For example,
+	:GTPL JLK;FOO */H,* BAR, PLAIN
+will print all files on JLK; with a first file name FOO, all with a
+second file name BAR, and JLK;PLAIN >.  All files will be printed in /H
+mode. 
+
+To cause listings created using the @ program to be spooled on the
+Gould, include the specification /X[G] in your commands to :@ (or /-X[G]
+if you want a /H (lineprinter) style listing).  Then the @ program will
+know how big to make the pages, and will queue the listing for
+printing.  To suppress spooling, use /X[-G] or /-X[-G].
+
+To Print a file on the XGP by producing ;SCAN files for the XGP, add the
+flag /O[X]  to the end of any of the above examples, as in,
+	:GTPL JLK;PLAIN FILE/X/O[X]
+This writes scan files on MC:.GLPT.;, then, if AI is up, it copies
+them to AI:.XGPR.; and writes a queue file for the XGP to have them
+printed.  To suppress the automatic printing on the XGP add /-S to the
+end of the commands.  Output on the XGP is used when extra quality
+output is needed (due to the Gould hardware losing) or for XGP users
+who have files which can not be handled directly by the XGP spooler
+(Examples:  Your text has a line which is too long to fit in the line
+buffer of the XGP PDP-11 program, such as a hairy equation;  you have
+plots you want printed;  you want text to come out rotated;  your text
+requires 69 fonts (this is rare);  you want to mix figures and text.)
+If a * is used in the file specification, only one queue request is
+made which includes all the scan files to be printed.  The files are
+automatically deleted from AI:.XGPR.; once they have been printed.
+
+To print a file so that the text is rotated on the paper relative to
+the way it usually comes out, specify [ROT n] after a /X, /A, /T, etc. 
+where n is one of 0,1,2,3.  The default rotation for the Gould is 0 for
+plots (e.g. /A) and 3 for XGP style text.  For output on the XGP, the
+defaults are 3 for plots and 0 for text.  For instance,
+	:GTPL JLK;PLOT FILE/A[ROT 3]
+would cause a plot to be printed rotated 90 degrees from its usual
+orientation.
+
+The next information node describes the command flags in greater detail.
+
+File: GLPT	Node: Commands	  Previous: Basic, Up: Top, Next: Types
+
+Commands for Requesting File Processing by the Gould Spooler
+
+   The general form for commands to the spooler is shown below:
+	:GTPL  <output spec>_<input spec> <command flags>, ...
+Several processing requests can be given separated by comma's.  A
+given request consists of an output file specification, an input file
+specification, and command flags.  Any of the three specifications may
+be omitted.  File specifications use the standard ITS file syntax,
+namely that a device is followed by ":" and a directory followed by
+";", for example
+	DEV:DIR;FN1 FN2, DIR; FN1 FN2 DEV:, FN1 DIR; FN2 DEV:,
+	DEV: FN1 DIR;,	FN1, FN1 FN2 DIR, FN1 FN2 DEV DIR,  ...
+are all valid file specifications where DIR is a file directory such as
+JLK, DEV is usually DSK (normally omitted), and FN1 FN2 are 2 filenames.
+The default output specification is DSK:.GLPT.;GLPT >.  Thus specifying
+	:GTPL JLK;_ ...
+will cause output files to be written out as JLK;GLPT >.  Use of * in
+an output file specification means use the default for that item.  For
+instance,
+	:GTPL JLK;* SAVE_ ...
+specifies that output files should be JLK;GLPT SAVE (this is not
+terribly useful).  The default for output files in XGP scan format is
+> SCN.  Note that when an output file specification is given, automatic
+spooling for actual printing is suppressed (see the /S command flag).
+This means your files will be processed into a form which can be sent
+to the GOULD or the XGP, but they will not actually be sent.
+   Input file specifications default to DSK:<sender>;GOULD > where
+<sender> is the XUNAME of the user running GTPL to make a request.  A
+specification of * as a file name means include all files of a given
+first or second file name (i.e. * FN2 means all files with FN2 as a
+second file name, and FN1 * means all files with FN1 as a first
+filename).  Note specifications of * * or simply * (defaulting to * >)
+are not allowed.  Note that you should be very careful using *
+specifications with the /K command flag (delete after printing).  *
+used as a device or directory specification simply means use the
+default.  To print files on more than one directory, you can use a
+directory specification of ****** which means all directories, but /K
+is complelety unavailable in this case. 
+  Certain characters must be quoted with ^Q (Control-Q) in order to
+include them in file names.  These characters are:
+	( ) _ ; : + - ^ / [ ] ' " ,
+For instance, to print JLK;.DDT_ (INIT), one would do
+	:GTPL JLK;.DDT^Q_ ^Q(INIT^Q)
+Note that no "_" is needed if no ouput file spec is given.  Further,
+	:GTPL _JLK;FOO BAR
+will cause JLK;FOO BAR to be processed, but not spooled, since a "_"
+specifies an output file (in this case, the default one).
+  Note that input and output defaults are "sticky" meaning that
+the file specification for one request is default for the next
+(except the default second file name is always > ).
+
+Command Flags
+
+   Command flags follow the input file specification (if there is one)
+and are either initiated by /  or (.  Command flags are single letters
+which can be preceeded by a digit or + or -  and may be followed by
+an options list of the form [<option1> | <option2> | ... ] or simply
+[<option>].  Examples are 
+	/A/K, /A K, (A K), /L [25FR], (X [ Skip 5 | BOTMAR 500 | Rot 3])
+Note spaces are ignored, and only a leading / or ( is required (flags
+are read up to the next "," or carriage return.
+   Command flags are "sticky", meaning that once they are specified,
+they apply for all subsequent input specs until changed (this may
+be reimplemented to make some flags local to a given specification).
+Thus it is sometimes convenient to specify flags first, as in
+	:GTPL /A K, file1, file2, file3,...
+
+The next node describes the set of command flags used for specifying
+the file-type of the input file (i.e. the type of text commands
+contained in the file - ARDS, XGP, etc.).
+
+File: GLPT	Node: Types	Previous: Commands, Up: Top, Next:
+Options
+
+Types of input files recognized by the GLPT spooler.
+
+  The GLPT spooler knows about XGP, ARDS, TEKTRONIX, DPLT, IMAGE and
+XGP IMAGE (;Scan) files, in addition to plain character files.
+--- DPLT and XGP IMAGE not yet implemented--
+
+  Flags for specifying particular file types are listed below.  If you
+are not sure of how the defaults will work, it doesn't hurt to
+make it explicit by including a type flag following the input file
+specification.  Options for file type flags are included in "[ ]"'s
+right after the flag, with "|" used for delimiters.  For example,
+/A [ SCALE 1.25 | Rot 3].
+
+Flag command.		Description
+
+/@		Indirect command file.  The specified file is
+		interpreted as spooler commands rather than as a file
+		to print.  CRLF is ignored in such files.
+
+/A		ARDS.  File has chars and ARDS graphics.
+		Options are:
+		       SCALE  - Overall scale for the plot.
+			        Default is 1.75 (??)
+		       THICK  - Line thickness (in raster dots).
+			        Default is 2
+		       ROT    - Rotation.  (Defines how lines and chars
+		                are written into the composition array.
+			        Defaults are 0 for GOULD and  3 for XGP
+			        output.
+		       BOTMAR - Bottom margin.  Default is 150. units.
+		       LFTMAR - Left margin.  Default is 150. units.
+                These options are usually only used when you are trying
+		to output plots as figures of a certain size or
+		orientation.
+
+/I		IMAGE.  The file is uncompressed bit image data,
+		in raster rows of 64 words each, with 32 bits
+		left justified in each word.  Primarily used with
+		GSCNV to print drawings from the DRAW program.
+		(XGP scan format cannot handle the larger word size
+		of these drawings, i.e. 11 x 15).  There can be
+		any number of rows, and a page cut is done at the
+		end unless suppressed by the /~ flag.  As an option
+		XGP scan format is also allowed by specifying /I[X].
+		Since image files tend to be rather large, the default
+		is that these files are deleted after they are printed.
+		to suppress this, add /-K to your command flags.
+
+/L		LIST.  Print the file like ;LIST mode on the XGP, that
+		is, put headers on the top of each page including the
+		page number, file name, date, etc.  If there are XGP
+		; commands in the beginning of the file, the LIST flag
+		is ignored.  The LIST command can take options like the
+		/X command (see below).  In particular, /L[font] is a
+		convenient way to get a listing in a particular font.
+		The font can be a font name or a font file spec.
+
+/H		Hardware printing mode.  List the file LPT style
+		(for plain ASCII files) on a page 11 inches wide by
+		8 1/2 inches high.  This is the fast way to get a
+		listing, and is particularly good for "throw away",
+		temporary listings.  There will be a LIST option
+		to allow page headings with the date, file name, etc
+		to be printed.
+
+/T		Tektronix.  File has Tektronix graphics commands
+		(often from a netout file generated by using a Tek
+		graphics package on some other machine like Multics).
+		Options are the same as for ARDS mode (see above).
+
+/X		XGP.	File has XGP commands.  Options are any
+		XGP ; commands (*Note:  Files:(XGP)). For example,
+		/X[;SKIP 10 |;VSP 6 |;KSET 25FR]  specifies that
+		10 pages are to be skipped, the default spacing
+		between lines is 6, font 0 is 25FR, etc.  In
+		addition, the ROT option may be specified to
+		set the page rotation (default is 0 for GOULD
+		output or 3 for XGP output).
+
+/D		DPLT.  File is DPLT format used by DRAW, GEOMED, and
+		other SAIL programs.  (not implemented yet).
+
+/O		Output format.  Specifies what type of output file
+		should be produced.  Options are G (the default) for
+		Gould, X for XGP Scan format (Note: XGP output: XGP),
+		and B for bit image (no formating or compression).
+
+File: GLPT	Node: Options	  Previous: Types,   Up: Top,  Next: System
+
+Options:
+
+; s	- Spool option.  To suppress this default for gould or xgp output, use -s
+; &	- Force image mode encoding (no scan compression). Mainly for debugging
+; $	- Append a graphic tail sheet. (silly hack...)
+; p	- Priority, preceded by a single digit (0-9)
+; b	- Black background
+; r	- Rotate the page.
+; N	- Notify.  Inform the user when his file has been printed (queued?)
+; k	- Kill (delete) the file once it has been printed.
+; u	- Unspool the file (i.e. remove it from the queue).
+; !	- Wraparound on over run lines (default is truncate unless in ;list mode)
+; *	- Reset the world
+; ?	- Send a status report
+; c	- Copies.  Preceeded by an numeric argument.
+; w	- Page width
+; z	- Page size
+; ~	- Don't cut paper. (Default is to cut at page boundaries)
+
+
+
+
+File: GLPT	Node: System	  Previous: Options, Up: Top, Next: Status
+
+
+;                        Maintainers' documentation.
+;
+;  To create a new spooler, compile this file and load it into a (new i/o)
+;  Lisp.  Then say (init-dump) and it will take care of initializing and
+;  dumping itself.
+;
+;                         Operation of the program.
+;
+;  Normally, it runs disowned.  It reads mail from GLMAIL < .GLPT.; , interprets
+;  it, and enters the interpretation into -GLPT- QUEUE .GLPT.; as printed
+;  list structure.  Then one by one it takes the entries off the queue
+;  and processes the files.  Output goes to GLPT > files, which are then
+;  sent to the Gould by the unspooler.
+;
+;                                  Errors.
+;
+;  Errors are reported to the user with the function user-error (qv).
+;
+;                                  Crocks.
+;
+;  Currently, the way the program senses the presence of mail files is
+;  to periodically (with alarmclock) check.  A better way would be to
+;  have some system of direct communication with the GTPL program, for
+;  instance a CLI interrupt or a shared page.  The advantages would be:
+;  no load on the system when nothing was happening; faster response;
+;  no change of working set to process the interrupt while processing a file
+;  (deferring interrupts in the present scheme would accomplish this
+;  last, but would slow down error messages).
+;  There is currently no status display.
+
+
+
+
+
+
+File: GLPT	Node: Status	  Previous: System,  Up: Top,  Next: XGP
+
+Mention GLDSTS, and :PEEK ;JGLPTR and what you can see there
+
+
+File: GLPT	Node: XGP	  Previous: Status,  Up: Top,  Next: Control
+
+Describe the problems in getting something out on the XGP
+
+File: GLPT	Node: Control	  Previous: XGP		Up: Top
+
+Mention USPGUN (and when you need it), GORBIT, etc.

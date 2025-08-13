@@ -1,0 +1,47 @@
+FINISH THE DEBUGGING PROGRAM TO DO BREAKPOINTS, SINGLE-STEP
+
+special codes (scale, scroll, rectangle mode, etc)
+
+CFFK@MIT-MC 03/08/77 21:43:14
+Esc-? for brief documentation.
+
+THIS PROBABLY WANTS TO BE DONE BY TALKING TO A SUPPORT PROGRAM ON THE PDP-10
+(EASY WHEN CAIOS NET ARRIVES)
+
+Work to be done on the R11MUX program:
+
+(1) Keyboard software:
+    A. key repeat like the Imlac (both n repeat and auto repeat)
+    b. Escape key functions - 
+       Esc Z - interline spacing adjustment
+       Esc F - form feed the Gould
+       ESC G - reset the gould
+       ESC I - PRINT STATUS INFO
+	OTHER ESCAPE KEYS??	scale, graphics, etc.
+    c. special key routines (GRAD, DEL, etc. keys)
+
+(2) Gould error recovery.
+	paper low handling could be made to win.
+	Loses when Gould is powered on after program is started.
+	other losing conditions?
+
+(8) CAIOS NET SOFTWARE
+
+(9) SIMPLE ASCII MODE OUTPUT TO THE GOULD
+
+(10) BETTER ERROR HANDLING (AVOID HALTS IF POSSIBLE)
+     especially when I.T.S. comes up
+
+(12) status line (for GTV, on demand for others)
+     (include both local pdp-11 status and pdp-10 status.
+      this is probably open ended and is a lot of work
+      since it requires a PDP-10 program to extract the
+      info from I.T.S. (by looking at system pages, etc.)
+      possible info:  free displays (local), number of ITS users
+			local tty modes, ....
+
+(13) support connection to modems
+
+(99) random (probably useless) ideas:
+     Implement TTYDIS (random tty controls like scale, etc.)
+     Support LSPESC (LISP display slave and draw program GT40 conventions)

@@ -1,0 +1,4569 @@
+	.title Terminal multiplexer, Gould driver, and self-debugger.
+
+	.sbttl Assembly Parameters and Constants
+
+
+STRTIM==30		;if the grinnel hasn't interrupted in this amount of ticks,
+			;restart the interrupts for it
+;  REGISTERS 
+
+R0=%0
+R1=%1
+R2=%2
+R3=%3
+R4=%4
+R5=%5
+SP=%6
+PC=%7
+
+;  MISCELLANEOUS CONSTANT DEFINITIONS
+
+; NUMBER OF DEVICES, TTYS (CHANNELS)
+NTTY==12		; MAXIMUM NUMBER OF TERMINALS (DBT N.INC.)
+NKBD==8			; NUMBER OF KEYBOARDS
+NDL11==4		; NUMBER OF DL-11 SERIAL INTERFACES
+NTEK==3			; NUMBER OF TEKTRONIX TERMINALS
+NAAD==2			; NUMBER OF ANN ARBOR DISPLAYS (SHARING ONE INTERFACE)
+NGTV==4			; NUMBER OF GRINNELL TV CHANNELS
+NGTVM==3		; NUMBER OF GRINNELL TV MEMORIES ACTUALLY PLUGGED IN
+NTYP==5			; NUMBER OF TERMINAL TYPES
+DTTY==12		; NUMBER OF THE DEBUGGING TTY LINE
+GSHARE==2		; NUMBER OF GOULD CHARS PROCESSED BEFORE TTY CHARS 
+cqlen==20		; Number of Clock Queue slots.
+
+; MEMORY ORGANIZATION
+PATSIZ==100		; SIZE OF THE PATCH AREA
+PDL=1700		; START OF THE PDL
+DBGPDL=1770		; START OF PDL FOR THE DEBUG TTY
+LABBLK=2000		; BLOCK OF BUFFER STARTS FOR THE LAB INTERFACE (2 WORDS)
+LABPNT=LABBLK+<2*6>	; BLOCK OF BUFFER POINTERS FOR THE LAB
+LOWCOR==LABPNT+<2*2>	; START OF LOW CORE (AFTER THE PDL)
+HIPAGE==16.		; FIRST PAGE IN HIGH CORE
+HOLEPG==0		; NUMBER OF PAGES IN THE HOLE
+HOLE==HOLEPG*2000*2	; HOLE IN MEMORY (*2 FOR BYTES)
+HICORE=HIPAGE*2000*2	; START OF HIGH CORE (20K-28K) *2 FOR BYTES
+LOWLIM==HICORE-HOLE	; LIMIT OF LOW CORE
+HILIM==HICORE+<8*2000*2>	; LIMIT OF HIGH CORE
+
+; BUFFER PARAMETERS (BYTES) 
+TIBFLN==400
+RIBFLN==302
+RSTRLN==40
+TSTRLN==100
+
+; OUTPUT DEVICE BUFFER PARAMETERS (BYTES)
+NETBLN==400
+TEKBLN==400
+AADBLN==400
+GTVBLN==40*6*2*NGTV	; must be multiple of 6 WORDS
+
+; ALLOCATION PARAMETERS
+ALCMAX==276		; MAXIMUM PERMISSABLE ALLOCATION
+ALCLIM==ALCMAX/2	; AT THIS POINT, ADD TO ALLOCATION
+ALCINC==ALCMAX/2	; THIS IS HOW MUCH TO INCREMENT THE ALLOCATION BY
+
+.SBTTL Channel/TTY/Device Associations
+
+.REPT NTTY
+	.IRP NUM,\.RPCNT
+CHN'NUM==.RPCNT*2
+	.ENDM
+.ENDR
+
+; DEVICE -> CHANNEL ASSIGNMENTS
+
+; TTY -> CHANNEL ASSIGNMENTS
+
+T32==CHN0
+T33==CHN1
+T34==CHN2
+T35==CHN3
+T36==CHN4
+T37==CHN5
+T40==CHN6
+T41==CHN7
+T42==CHN10
+T43==CHN11
+
+; Device <- Channel Assignments
+
+GLDTTY==CHN0
+TEK1==CHN1
+TEK2==CHN2
+AAD1==CHN3
+AAD2==CHN4
+GTV1==CHN5
+GTV2==CHN6
+GTV3==CHN7
+GTV4==CHN10
+TEK3==CHN11
+
+; Channel <- Device Assignments
+
+DEV0==GLDTAB
+DEV1==TK1TAB
+DEV2==TK2TAB
+DEV3==AADTAB
+DEV4==AADTAB
+DEV5==GTVTAB
+DEV6==GTVTAB
+DEV7==GTVTAB
+DEV10==GTVTAB
+DEV11==TK3TAB
+
+
+; CHANNEL DEVICE TYPE ASSIGNMENTS
+
+DTYP0==%TCGLD
+DTYP1==%TCTEK
+DTYP2==%TCTEK
+DTYP3==%TCAAD
+DTYP4==%TCAAD
+DTYP5==%TCGTV
+DTYP6==%TCGTV
+DTYP7==%TCGTV
+DTYP10==%TCGTV
+DTYP11==%TCTEK
+
+; KEYBOARD -> CHANNEL ASSIGNMENTS
+
+KBD0==CHN3
+KBD1==CHN5
+KBD2==CHN6
+KBD3==CHN7
+KBD4==CHN10
+KBD5==CHN4
+KBD6==CHN11			; HACK BUT BELLS WILL LOSE
+KBD7==CHN1
+
+; CHANNEL -> KEYBOARD ASSOCIATIONS
+
+
+CKBD0==0
+CKBD1==7
+CKBD2==0
+CKBD3==0
+CKBD4==5
+CKBD5==1
+CKBD6==2
+CKBD7==3
+CKBD10==4
+CKBD11==6
+
+
+
+.SBTTL Macros - PDL Maintenance
+
+.MACRO PUSH X
+  .IRP Y,<X>
+	MOV Y,-(SP)
+	pd==pd+2
+  .ENDM
+.ENDM
+;Must do pd hack after each push so that
+;push <...,foo+pd(sp)> will work
+
+.MACRO POP X
+  .IRP Y,<X>
+	MOV (SP)+,Y
+	pd==pd-2
+  .ENDM
+.ENDM
+
+.macro npop n
+	.if ne n
+	  pd==pd-n*2
+	  add #n*2,sp
+	.endc
+.endm
+
+; Initialize PD
+pd==0
+
+;Exit from routine with n args on stack.
+.macro nppret n
+	pop n*2-2(sp)		;Put return address in useful place
+	npop n-1
+	pdtest
+	ret
+.endm
+
+;;  These macros are a crude attempt at lexical PDL analysis
+
+; In in-line code (no conditional pushes) these macros allow
+; reasonable access to pdl information.  For instance, a routine
+; which is called by the sequence
+;	push linel	;(argument)
+;	call adjlnl
+; would be able to access linel consistently by using the procedure:
+;	args xlinel
+;adjlnl:push <r0,r1>
+;	mov xlinel+pd(sp),r0	;Note independence from extraneous pushes
+;	...
+;	pop <r1,r0>
+;	nppret 1		;Return from 1-argument routine
+
+
+.macro args x
+ .irp y,<x>
+   y==<%narg-.irpcnt>*2
+ .endm
+.endm
+
+.macro entry exit,arglist
+  pd==0
+  args <arglist>
+  %entrp==1
+
+  .macro %exmac
+    .expunge arglist
+    exit
+    %entrp==0
+  .endm
+
+  .if idn exit,rti
+    .if dif <arglist>,<>
+     .error Non-nil argument list for interrupt routine
+    .endc
+    %intpc==0
+    %intps==2
+  .endc
+
+  .if idn exit,ret
+    %retpc==0
+  .endc
+
+.endm
+
+.macro pdinc
+pd==pd+2
+.endm
+;Macro to keep track of push-down depth--
+; execute when pushing without push
+
+.macro pddec
+pd==pd-2
+.endm
+;For popping without pop
+
+.macro pdtest
+.if ne pd
+.error PDL error
+pd==0
+.endc
+.endm
+;Put in code when PDL should be restored
+;Allow error checking to continue
+
+;; For simple branching, we use the following macros:
+
+pdidx==0
+
+.macro pdsav
+pdidx==pdidx+1
+pd'pdidx==pd
+.endm
+
+.macro pdrst
+pd==pd'pdidx
+pdidx==pdidx-1
+.endm
+
+;After all branches, check popped level
+.macro pdsvtt
+.if ne pdidx
+.error pdidx error
+.endc
+.endm
+
+.MACRO TVPUSH VAL
+	CMP TVCSTK,#TVCSTE
+	BLT .+14
+	DECW TVCSTK		; PUSH STACK POINTER
+	MOV VAL,@TVCSTK		; STORE THE COMMAND
+.ENDM
+
+.MACRO TVPOP TO
+	MOV @TVCSTK,TO
+	INCW TVCSTK
+.ENDM
+
+; Other macros
+
+.MACRO MASK LEVEL
+	PUSH %PS
+	MOV #<LEVEL>_5,%PS
+.ENDM
+
+.MACRO UNMASK
+	POP %PS
+.ENDM
+
+.MACRO CALL X
+	JSR PC,X
+.ENDM
+
+.MACRO JCALL X
+	JMP X
+.ENDM
+
+.MACRO RET
+;	mov pc,patch		; for debugging
+	RTS PC
+.ENDM
+
+.MACRO SKPRET
+	ADD #4,(SP)
+	RET
+.ENDM
+
+.sbttl Macros - Miscellaneous
+
+.MACRO INCW X			; WORD POINTER INCREMENT
+	ADD #2,X
+.ENDM
+
+.MACRO DECW X
+	SUB #2,X
+.ENDM
+
+;X and Y cannot be stack references of any kind.
+.MACRO 	XOR X,Y
+	MOV X,-(SP)
+	BIC Y,(SP)
+	BIC X,Y
+	BIS (SP)+,Y
+.ENDM
+
+.MACRO MSG X
+.NCHR ZZ,^\X\
+	.WORD ZZ
+	.ASCII \X\
+	.EVEN
+.ENDM
+
+.MACRO FATAL
+	MOV #ER.PGM,ERCODE
+	CALL ERROR
+.ENDM
+
+.MACRO TABWRD WORD,INIT		; DEFINE AN ENTRY IN A TABLE SYMBOLICALLY
+	.=TABORG+WORD
+	.IF NDF INIT
+	    .WORD 0		; THIS MAY CAUSE LOSSAGE FOR UNDEFINED SYMS
+	.ENDC
+	.ELSE
+	    .WORD INIT
+	.ENDC
+.ENDM
+
+TABBEG==LOWCOR
+
+.MACRO BEGTAB			; MACROS FOR ENTERING TABLES IN THE TABLE
+       TABSAV==.		; SPACE.  USAGE:
+       .=TABBEG			; BEGTAB
+.ENDM				; <TABLES>
+				; ENDTAB
+.MACRO ENDTAB
+       TABBEG==.		; SAVE FOR NEXT CALL
+       .=TABSAV
+.ENDM
+
+.SBTTL Initialization
+
+.=DBGPDL
+SavTPdl: .word 0
+
+.=LABBLK
+	LABBF0			; POINTERS TO THE BUFFERS
+	LABBF1
+	LABBF2
+	LABBF3
+	LABBF4
+	LABBF5
+.=LABPNT
+	0			;POINTERS TO THE OFFSETS FOR THE GIVEN INTERFACES
+	0
+
+.=HICORE		; CODE STARTS AT HIGH CORE
+
+;;		Initialize processor.
+
+INIT:	MOV #%mstr,%PS
+	RESET
+	CLR ERCODE			; Start with no errors
+	MOV #30.,R0			; wait a half-second for things to settle
+1$:	BIC #200,%LKS			; Start clock tic
+2$:	BIT #200,%LKS
+	BEQ 2$
+	DEC R0
+	BGT 1$
+
+;;		Initialize stacks.
+INIT2:	mov #DBGPDL,sp			; Initialize debug-TTY stack.
+	mov #dbt,-(sp)
+	mov sp,SavTPDL
+	MOV #PDL,SP			; INITIALIZE STACK
+	CLR (SP)			; ZERO THE STACK
+1$:	CLR -(SP)
+	CMP SP,#400
+	BGT 1$
+	MOV #PDL,SP			; INITIALIZE STACK
+
+	call cqinit			; Initialize clock queue.
+	CLR ALSCRW			; INITIALIZE COUNT OF SCREWED ALLOCS
+
+;;		Network initializations
+	MOV #NETSEL,NETDIS		; INTERNAL POINTER IN DEVICE 0
+	CLR LINEN			; FORCES FIRST LINE SELECT
+	PUSH NETRBF
+	PUSH NETRBF			; CLEAR NET INTERFACE BY READING
+	ADD #4,SP			; POP RANDOMNESS OFF THE STACK
+	BIS #INTARM,NETRST		; ENABLE RECEIVE INTERRUPTS NOW.
+	; The assumption here is all allocations on the PDP-10 should be 0
+	; at this time, since the 11 is being re initialized.
+
+
+;;		Initialize multiplexed device buffers and control.
+	.IRP DEV,<NET,AAD,GTV>
+	 MOV #DEV'TAB,R1			;  DEVICE STATUS TABLE
+	 CALL INITDV
+	 BIC #INTARM,DEV'TST		; DISABLE TRANSMIT INTERRUPTS
+	.ENDM
+
+;;		Initialize TEK's
+	.REPT NTEK
+	 .IRP N,\.RPCNT+1
+	  MOV TK'N'RBF,R0		; CLEAR BY READING THE BUFFER
+	  BIS #INTARM,TK'N'RST		; ENABLE RECEIVE INTERRUPTS
+	  MOV #TEK'N,R3
+	  CALL INITDV
+	  BIC #INTARM,TK'N'TST
+	 .ENDM
+	.ENDR
+
+;;		Initialize all tty channels
+	MOV #<<NTTY-1>*2>,R3		; Highest TTY (index) to initialize
+2$:	MOV CHNL(R3),R1
+	CALL INITTY			; TTY INITS
+	SUB #2,R3			; Next victim
+	BPL 2$				; Loop
+
+;; Some Device Dependent Initializations
+
+;;		Initialize the Gould
+	CALL INIGLD
+
+;;		Initialize keyboard multiplexer
+	MOV KMXRBF,R0			; KEYBOARD MULTIPLEXER
+	MOV #1,KMXTST			; INITIALIZE THE TESTER
+	CALL KMXCHK
+
+;;		Initialize the multiplexed Ann Arbor Displays
+	CLR AADRCN		; Zero the repeat count
+	MOV #SPACE,AADRWD	; SPACE REPEAT HACK
+
+;; 		Initialize the Grinnell TV System
+	MOV #<%TVLWM+%TBNWM>,GTVTBF	; LOAD THE DEFAULT WRITE MODE
+	MOV #<%TVLUM+%TBNUM>,GTVTBF	; DEFAULT UPDATE MODE
+	MOV #<%TVLSM+7777>,GTVTBF	; ENABLE ALL SUBCHANNELS
+	MOV #%TVLDC,GTVTBF		; DISABLE ALL CHANNELS
+	MOV #<TVCSTK-2>,TVCSTK		; INITIALIZE THE CURSOR STACK
+	CLR @TVCSTK
+	MOV #GTV1,R0
+3$:	PUSH <R0,#GTVCTM>		; QUEUE TV CURSOR ROUTINES
+	CALL CQADD
+	INCW R0
+	CMP #<GTV1+<2*NGTVM>>,R0
+	BGT 3$
+
+;;		Initialize the Line Clock
+	BIC #200,%LKS			; CLEAR INTERRUPT REQUEST; NECESSARY???
+	BIS #INTARM,%LKS		; TURN ON LINE CLOCK INTERRUPTS
+
+;;		INIT THE LAB INTERFACE
+	CALL LABINI
+;;		Clear registers, etc
+	.IRP R,<R0,R1,R2,R3,R4,R5>	; Clear the registers (makes debugging easy)
+	 CLR R
+	.ENDM
+	CLR MPCNT
+
+;;		End of initialization -- set everything going
+
+	MOV #WAIT,WAITPL		; Clobber wait instruction in main loop.
+	CLR %PS				; ALLOW INTERRUPTS
+	JMP MPLOOP			; go to main program loop
+
+.SBTTL Routines for Initializing Channels
+
+INITTY:	CLR RI.ICN(R1); INITIALIZE THE RECEIVE SIDE
+	CALL INITTI
+	CALL INITRI
+	RET
+
+INITRI:	MOV RI.BEG(R1),RI.PTR(R1)
+	MOV RI.BEG(R1),RI.LIM(R1)
+	CLR RI.BLK(R1)
+	MOV BTABRL(R3),@RI.FLG(R1)
+	CLR RS.CNT(R1)
+	MOV RS.TBF(R1),RS.PTR(R1)
+	CLR SP.FLG(R1)
+	CLR RI.CON(R1)
+	CLR ALNUM(R1)
+	MOV #%INTCA,R2			; ZERO THE ALLOCATION TO START
+	JCALL ALCPUT
+
+INITTI:	MOV TI.BEG(R1),TI.PTR(R1)
+	MOV TI.BEG(R1),TI.LIM(R1)
+	CLR TI.BLK(R1)
+	CLR TS.CNT(R1)
+	MOV TS.TBF(R1),TS.PTR(R1)
+	CLR TI.CON(R1)
+	MOV BTABLR(R3),@TI.FLG(R1)
+	RET
+
+INIGLD:	MOV #GLDBUF,R0
+	MOV R0,GLBEG		; INITALIZE GOULD DATA QUEUE POINTERS
+	MOV R0,GLPTR
+	MOV R0,GTPTR
+	MOV R0,GLLIM
+	MOV R0,GTLIM
+	MOV SGLIBR,GLIBR	; FIX BRANCH FOR M.P. FAKERY OF GOULD INTERRUPT
+	.IRP VAL,<GLBLK,JMPFLG,REPFLG,GLERR,PAGMNG,QOTFLG,GRFFLG,GLDCLK>
+	 CLR VAL
+	.ENDM
+	MOV #1,GLIDL
+	MOV #CMIDEC,GLIPTR
+	MOV #CHRDEC,GLDPND
+	MOV #MAKWD1,WRDPTR
+	MOV #DATDEC,GLDPTR
+	MOVB #177,PAGCNT
+	MOV #1,EODFLG		;End of data? yes.
+	MOV #%GCOFF,@#GLDCSR	; DISABLE THE PRINTER TO CLEAR ANY OLD INTERRUPTS
+	MOV #%GCION,@#GLDCSR	; ENABLE GOULD INTERRUPTS
+	RET	
+
+INITDV:	MOV OD.BEG(R1),OD.PTR(R1)
+	MOV OD.BEG(R1),OD.LIM(R1)
+	CLR OD.BLK(R1)
+	CLR OD.SLP(R1)
+	RET
+
+LABINI:	CLR LABPNT
+	CLR LABPNT+2		;CLEAR THE BUFFER POINTERS
+	CLR LB1CSR
+	CLR LB2CSR		;CLEAR OUT THE GO BIT
+	TST LB1BUF		;CLEAR OUT THE REGISTER FOR NOW
+	TST LB2BUF
+	MOV #101,LB1CSR		;SET INTERRUPT ENABLE AND RECEIVE BIT
+	MOV #101,LB2CSR
+	RET
+
+ALSCRW:	.WORD 0			; COUNT OF SCREWED ALLOCATIONS
+
+.SBTTL Main Program Loop Dispatch Macro
+
+; START WITH THE GOULD FOR EFFICIENCY
+
+.MACRO DISFIRST
+
+	.IRP G,\GLDTTY/2
+	GLIBR:	BR CPGLDA		; MAIN PROGRAM ACTIVATION OF GOULD
+		TST GLERR
+		BNE CPGLDA		; SKIP IF GOULD ERROR
+		 MASK 5			; GETS POPPED BY RTI IN GLDINT
+		 CALL GLDINT
+		 MOV SGLIBR,GLIBR	; CLEAN UP AND FALL THROUGH
+
+	CPGLDA:	BR CPGLDR		; GOULD STATUS, ALLOC, ETC MESSAGES
+		MOV #GLDTTY,R3		; SELECT GOULD CHANNEL
+		CALL MPCPLR
+		INC MPCNT
+					; MUST BE A JMP FOR SKPRET TO WORK!
+	CPGLDR:				; PROCESS DATA FOR OUTPUT TO THE GOULD
+		BR NXT'G		; DEFINED BY NEXT CALL TO DISPATCH MACRO
+		MOV #GLDTTY,R3
+		CALL GLDMP	; GO DO GOULD RECEIVED DATA MP ROUTINE
+		INC MPCNT
+
+	; ENTER AN ITEMS IN THE BRANCH TABLE.
+	; BTLR  IS BRANCH TABLE: LOCAL TO REMOTE PROCESSING
+	; BTRL  IS BRANCH TABLE: REMOTE TO LOCAL PROCESSING
+
+
+		SAVLOC=.
+		.=BTABLR+GLDTTY
+	BTLR'G:	BR .+<CPGLDR-CPGLDA>
+		.=BTABRL+GLDTTY
+	BTRL'G:	BR .+<NXT0-CPGLDR>
+		.=SGLIBR
+		BR .+<CPGLDA-GLIBR>
+		.=SAVLOC
+
+	CPRL'G==CPGLDR
+	CPLR'G==CPGLDA
+	OCHN==G
+	.ENDM
+.ENDM
+
+.MACRO DISPATCH CHN		; DISPATCH MACRO FOR TTY'S
+   .IRP N,\CHN/2
+	CHN2==N*2
+
+	; CPLRnn means Channel Process: Local to Remote
+	; CPRLnn means Channel Process: Remote to Local
+
+	CPLR'N:	BR CPRL'N	; CODE FRAGMENT FOR DISPATCH LOOP
+		MOV #CHN2,R3
+		CALL MPCPLR	; HANDLE TRANSMIT - LOCAL TO REMOTE PROCESS
+		INC MPCNT
+
+	CPRL'N:	BR NXT'N	; DEFINED BY NEXT CALL
+		MOV #CHN2,R3
+		CALL MPCPRL	; HANDLE RECEIVE - REMOTE TO LOCAL PROCESS
+		INC MPCNT
+
+	; ENTER AN ITEMS IN THE BRANCH TABLE.
+	; BTLR  IS BRANCH TABLE: LOCAL TO REMOTE PROCESSING
+	; BTRL  IS BRANCH TABLE: REMOTE TO LOCAL PROCESSING
+
+		SAVLOC=.		; ENTER AN ITEM IN THE BRANCH TABLE
+		.=BTABLR+CHN2
+	BTLR'N:	BR .+<CPRL'N-CPLR'N>
+		.=BTABRL+CHN2
+	BTRL'N:	BR .+<NXT'N-CPRL'N>
+		.=SAVLOC
+
+		.IRP ON,\OCHN
+		NXT'ON==CPLR'N
+		.ENDM
+	OCHN==N
+   .ENDM
+.ENDM
+
+.MACRO	DISEND
+	.IRP N,\OCHN
+	NXT'N==.
+	.ENDM
+	SAVLOC==0
+	OCHN==0
+		TST MPCNT		; SEE IF ANYTHING HAS HAPPENED
+		 BNE MPCON		; YES, LOOP AROUND FOR MORE
+	WAITPL:	WAIT			; NOPE, WAIT FOR SOMETHING
+	MPCON:	CLR MPCNT		; RESET AND LOOP AROUND
+		JMP MPLOOP
+.ENDM
+
+.SBTTL Main Process Scanning Loop
+
+; THESE BR TABLES MUST COME BEFORE THE DISPATCH MACROS BELOW
+
+BTABLR:	.BLKW NTTY
+BTABRL:	.BLKW NTTY
+SGLIBR:	.BLKW 1
+MPCNT:	.WORD 0
+
+MPLOOP:	DISFIRST		; GENERATES DISPATCH TO GOULD MP
+	DISPATCH GTV1
+	DISPATCH GTV2
+	DISPATCH GTV3
+	DISPATCH GTV4
+	DISPATCH AAD1
+	DISPATCH AAD2
+	DISPATCH TEK1
+	DISPATCH TEK2
+	DISPATCH TEK3
+	DISEND
+
+.SBTTL Interrupt Handlers - Errors, Traps, UUOs, Power On/Off, Null
+
+;  FATAL INTERRUPT HANDLER 
+
+CPUERR:	MOV #ER.CPU,ERCODE
+	CALL ERROR
+
+ILLOPR:	MOV #ER.ILO,ERCODE
+	CALL ERROR
+
+IOTTRP:	MOV #ER.IOT,ERCODE
+	CALL ERROR
+
+EMTTRP:	MOV #ER.EMT,ERCODE
+	CALL ERROR
+
+UUOH:	MOV #ER.UUO,ERCODE
+	CALL ERROR
+
+ERROR:	BIC #INTARM,%LKS	; TURN OFF THE CLOCK
+	MOV #<5_5>,%PS		; ALLOW LEVEL 6 INTERRUPTS
+	BIS #INTARM,KMXRST	; ALLOW KEYBOARD INTERRUPTS (FOR C-M-BREAK)
+	.IRP R,<R1,R2,R3,R4,R5,SP>
+	MOV R,E'R
+	.ENDM
+	BR .
+ 	JMP INIT		; SO CONTINUE WILL WORK
+;  POWER FAIL HANDLER 
+
+ERCODE:	.WORD 0
+	.IRP R,<R1,R2,R3,R4,R5,SP>
+E'R:	.WORD 0
+	.ENDM
+
+.IRP ERR,^|PGM,CPU,ILO,IOT,EMT,UUO|	; ASSIGN ERROR CODES
+     ER.'ERR=177700+<.IRPCN*2>		; These symbols should not get in the way.
+.ENDM
+
+
+
+POWROF:	MOV #RSTALL,%PWRV
+	HALT
+
+RSTALL:	MOV #POWROF,%PWRV
+	JMP INIT
+
+IMLINT:	RTI			; NOT SPECIFIED YET
+
+.SBTTL Interrupt Handlers - Line clock and clock queue routines
+
+;; One word can count up to about 18 minutes.  Two words to over two years;
+;; so one word is not enough, but two words are (unfortunately) plenty.
+Time:	.word 0			;Number of ticks since loading.
+Time1:	.word 0			;High order word, if anyone wants it.
+Dietm:	.word 0			;Time we last died.
+Dietm1:	.word 0			; high order.
+GTVTIM:	.WORD 0			;NUMBER OF TICKS UNTIL WE RESTART THE GRINNELL
+NSTART:	.WORD 0			;NUMBER OF TIMES WE HAVE HAD TO RESTART IT
+GTVDBG:	.WORD 0			;IF NON ZERO DONT RESTART EVER
+
+Clkint:	bic #200,%lks		; Clear interrupt request; necessary???
+	inc time		;Tick
+	bne 2$			;Carry?
+	 inc time1		;Adjust high word.
+2$:	TST GTVDBG		;DONT HACK IF NON ZERO
+	BNE 10$
+	BIT #INTARM,GTVTST	;IS THE INTERRUPT ON FOR THE GTV?
+	BEQ 10$			;NO, FORGET IT
+	DEC GTVTIM
+	BPL 10$			;DONT RESTART IT YET
+	MOV #%TVNOP,GTVBUF	;SEND OUT A NOP TO GET THE INTERRUPTS GOING AGAIN
+	INC NSTART
+	MOV #STRTIM,GTVTIM
+10$:	push r0
+	bic #intarm,%lks	;Turn off clock interrupts
+	inc inclki		; Let other routines know they are inside clkint
+3$:	mov ActQue,r0
+	beq 4$			;We got to the end.
+	cmp time,cq.tim(r0)	;Time to do anything?
+	bne 4$
+	 cmp time1,cq.tm1(r0)
+	 beq 5$
+4$:	  pop r0			;Done
+	  clr inclki
+	  bis #intarm,%lks
+	  rti
+5$:	mov cq.nxt(r0),ActQue	;Unqueue object in r0 (= c(ActQue))
+	mov FreQue,cq.nxt(r0)
+	mov r0,FreQue
+	push cq.act(r0)
+	mov cq.arg(r0),r0	;Arg in r0
+	call @(sp)+		;Call routine
+	br 3$			;Any more for this time?
+
+inclki:	.word 0
+;;Used to avoid turning clock interrupts back on when
+;; cqadd is called from inside a routine called by Clkint.
+
+
+;;;	Routines for handling clock queue--things waiting fixed times
+;;;		to happen.
+
+;; Organization: there is a block of nodes with four fields:
+;; Next, Time, Action, and Argument.  There is a queue of actions yet to happen,
+;; (ActQue) which is a bunch of these nodes linked together by their Next
+;; fields, and a free list similarly linked (FreQue).  A zero link
+;; is the end-of-list mark.
+
+CQ.NXT==0	;Next field--must be zero (see ActQue).
+CQ.TIM==2	;Activation time
+CQ.TM1==4
+CQ.ACT==6	;Action routine
+CQ.ARG==10	;Argument for routine
+CQ.LST==CQ.ARG	;Last field
+
+; Not in table space since not linearly allocated.
+
+cqblk:	nxtblo==0		;End of queue.
+	.rept cqlen
+	  .=.+cq.nxt		;Get to Next field.
+	  .word nxtblo		;Point
+	  nxtblo==.-2
+	  .=.-cq.nxt+cq.lst+2	;Get to next node.
+	.endr
+
+ActQue:	.word 0			;Action queue--sometimes used as pseudo-node
+				; with only a Nxt.  Cq.Nxt must therefore = 0.
+FreQue: .word nxtblo		;Free queue
+
+cqinit:	clr inclki		;Not inside CLKINT to start.
+	mov time,Dietm		;Useful?
+	mov time1,Dietm1
+	clr r0			;Set up clock queue.
+	mov #cqlen,r1
+	mov #cqblk,r2
+1$:	mov r0,(r2)		;Once for each entry.
+	mov r2,r0
+	add #cq.lst+2,r2
+	dec r1
+	bgt 1$
+	clr ActQue		;Initial conditions.
+	mov r0,FreQue
+	ret
+
+;; The action queue is kept sorted in order of activation times.
+;; When the activation time of the top node equals the current
+;; time, the routine pointed to by the Action field is called
+;; at clock interrupt level with its argument in r0.
+
+; Main program routine.
+
+; cqadd: Add an entry to the clock queue: two arguments on stack:
+; time from now and routine to call then.  An argument to be given
+; to the called routine in R0 can be specified in R0.
+
+;entry ret,<xtime,xrout>
+
+cqadd:	bic #intarm,%lks		;Turn clock interrupts off
+	push <r0,r1,r2>
+	mov FreQue,r1			;Get free queue pointer.
+	beq QueFul			; Loop waiting for one
+	mov cq.nxt(r1),FreQue		;Update free pointer.
+;	mov xtime+pd(sp),cq.tim(r1)	;Fetch relative time.
+;	mov xrout+pd(sp),cq.act(r1)	;Fetch routine.
+	mov 12(sp),cq.tim(r1)
+	mov 10(sp),cq.act(r1)
+	mov r0,cq.arg(r1)
+1$:	mov time1,cq.tm1(r1)		;Make into absolute time safely.
+	add time,cq.tim(r1)	
+	adc cq.tm1(r1)			;If there was overflow, add into high bits.
+
+;; Now loop to splice this entry (r1) into the queue.
+;; r0 points to the last entry, r2 points to the next entry.
+;; Note the hack for the case where ActQue contains 0 which
+;; depends on cq.nxt=0.
+
+	mov #ActQue,r0
+	mov ActQue,r2		;r2 is place being examined.
+cqlp:	beq cqsplc		;nothing left in queue, so go splice on the end
+	cmp cq.tm1(r2),cq.tm1(r1)	;compare msb of time
+	bhi cqsplc
+	blo 1$
+	 cmp cq.tim(r2),cq.tim(r1)	;compare lsb of time
+	 bhi cqsplc
+1$:	mov r2,r0		;step along
+	mov cq.nxt(r2),r2
+	br cqlp
+
+cqsplc:	mov r1,cq.nxt(r0)	; now splice the entry in
+	mov r2,cq.nxt(r1)
+
+	pop <r2,r1,r0>
+;	nppret 2			;2-arg exit
+	pop 2(sp)
+	add #2,sp
+	tst inclki		; Are we inside the clock interrupt?
+	bne 1$			; Yes, so skip the enable
+	 bis #intarm,%lks	; Turn clock interrupts back on
+1$:	ret
+
+QueFul:	fatal
+
+
+.SBTTL Interrupt Handlers - Gould Line Printer
+
+GLDINT:	PUSH <R0,R4,R5>
+	MOV GTLIM,R4
+	TST GLERR		; ARE WE ALREADY IN AN ERROR STATE?
+	BNE 2$
+	BIT #%GSERR,GLDCSR	; SHOULD WE GO TO AN ERROR STATE?
+	BEQ 1$
+
+	MOVB GLDCSR+1,GLDERR		; YEP
+	INC GLERR		; INFORM WORLD THAT GOULD IS IN TROUBLE
+	INC PAGMNG		; COUNT OF PAGE MUNGING INCIDENTS
+				; FOR END OF GOULD ERROR MONITOR
+	PUSH #GLIXIT		; PUSH THE CONTINUATION ADDRESS
+	JCALL STAGLD		; TELL UNSPOOLR WHAT HAPPENED
+
+2$:	BIT #%GSERR,GLDCSR	; IS AN ERROR STILL PRESENT?
+	BEQ 3$
+	 JMP GLIXIT		; YEP
+
+3$:	CLR GLERR		; NOPE, CLEAN UP
+
+	; WE ARE ASSUMING THAT SELECTION IS PRESERVED WHEN SYSTEM
+	; RESET IS ACHIEVED FOLLOWING MANUAL ERROR CORRECTION
+	; (HOPEFULLY, THIS OCCURS WHEN THE PRINTER IS BROUGHT ON LINE)
+
+1$:	JMP @GLIPTR
+
+CMIDEC:	TST JMPFLG		; IF IN MIDDLE OF JUMP MACRO, SHOULD NOT
+				; TEST FOR BUFFER LIMITS OR COMMAND COMPLETION
+	BNE 112$
+	CMP R4,GLEND		; ARE WE EQUAL TO OR GREATER THAN THE END OF
+				; THE FIRST BUFFER LIMIT?
+	BLO 111$
+	MOV GLBEG,R4		; THEN CIRCLE AROUND TO BEGINNING
+111$:	TST REPFLG		; IF IN REPEAT, SHOULD NOT TEST COMMAND COMPLETION
+	 BNE 1$
+	MOV R4,GLLIM		; SUCCESSFUL COMPLETION OF A FULL COMMAND,
+				; UPDATE POINTER THAT MAIN PROGRAM LOOKS AT
+
+	CLR GLBLK		; IN CASE M.P. IS HUNG FOR LACK OF SPACE
+
+1$:	CMP R4,GLPTR		; NOTHING LEFT TO DO?
+	BNE 112$
+	INC GLIDL		; COMPLAIN TO WORLD
+	JMP GLIXIT
+
+112$:	BIT #%GSPAP,GLDCSR	; IS GOULD RUNNING LOW ON PAPER?
+	BEQ 11$
+	MOVB GLDCSR+1,GLDERR		; YEP
+	CALL STAGLD		; TELL UNSPOOLER WHAT IS ABOUT TO HAPPEN
+
+11$:	CLR GLIDL		; WE GOT SOMETHING TO DO
+	MOV (R4)+,R0
+	BMI 2$			; BRANCH IF INTERNAL MACRO COMMAND
+
+14$:	CMP R0,#5		; IF LAST LINE FLAG, DON'T WANT TO WAIT FOR SBUSY
+	BEQ 15$
+
+
+	BIT #%GSBSY,GLDCSR
+	BNE 12$			; BRANCH IF BUSY
+15$:	SWAB R0
+	TSTB R0			; TEST FOR DELAYED COMMAND
+	BNE 4$
+
+
+; IMMEDIATE GOULD COMMAND
+	SWAB R0
+	BIT #170,R0		; THE FOUR UNUSED BITS IN THE GOULD
+				; COMMAND BYTE
+	 BEQ 115$
+	MOV #PAGLST,R5		; REQUEST FOR TAILSHEET PAGE MUNGING STATUS
+	MOV PAGMNG,R0
+	CALL CHRNUM
+	CLR PAGMNG		; RESET FOR NEXT FILE
+	 BR 116$
+115$:	MOVB R0,GLDCSR
+116$:	MOV #CMIDEC,GLIPTR
+	 JMP CMIDEC
+
+; DELAYED GOULD COMMAND
+4$:	SWAB R0
+	MOVB R0,GLDCSR
+	MOV #CMIDEC,GLIPTR
+	BR GLIXIT	
+
+12$:	MOV R0,PNDR0
+	MOV #13$,GLIPTR
+	 BR GLIXIT
+	
+13$:	MOV PNDR0,R0
+	BR 14$
+
+
+2$:
+; MOBY COMMAND
+	BIT #17400,R0
+	BNE 5$			; DMA COMMAND
+	BIT #40000,R0		; REPEAT COMMAND
+	BNE 3$
+	BIT #20000,R0		; CURRENT PAGE COMMAND
+	BNE 6$
+
+
+; JMP COMING UP
+	BIT #1,R0
+	BEQ 21$
+
+; POP
+	MOV JMPRET,R4
+	CLR JMPFLG
+	 JMP CMIDEC
+
+;PUSH
+21$:	MOV (R4)+,R0		; PUT JUMP ADDRESS INTO R0
+	MOV R4,JMPRET		; JMPRET IS ADDRESS AFTER JUMP COMMAND
+	INC JMPFLG
+	MOV R0,R4
+	 JMP CMIDEC
+
+3$:
+; REPEAT COMING UP
+	BIT #1,R0
+	BEQ 31$
+
+; POP
+	DEC REPCNT
+	 BNE 32$
+	CLR REPFLG
+	 JMP CMIDEC		; R4 IS LEFT POINT TO INSTRUCTION AFTER REPEAT LOOP
+
+32$:
+; ITERATE
+	MOV REPRET,R4
+	 JMP CMIDEC
+
+
+
+;PUSH
+31$:	MOV (R4)+,REPCNT	; REPEAT COUNT GOES INTO R0
+	MOV R4,REPRET		; REPRET IS THE ADDRESS OF BEGINNING OF LOOP
+	INC REPFLG
+	 JMP CMIDEC
+
+6$:
+; CURRENT PAGE COMMAND COMING UP
+	MOVB R0,PAGCNT
+	 JMP CMIDEC
+
+5$:
+; DMA COMMAND COMMING UP
+	BIT #%GSDON,GLDCSR
+	 BEQ 51$
+	MOV R0,GLDWC		; COUNT
+	MOV R4,GLDCA		; ADDRESS
+	NEG R0
+	ASL R0
+	ADD R0,R4
+
+53$:	BIT #%GSDON,GLDCSR
+	 BEQ 52$
+	MOV #CMIDEC,GLIPTR
+	 JMP CMIDEC
+
+52$:	MOV #53$,GLIPTR
+	 BR GLIXIT
+
+51$:	MOV #5$,GLIPTR
+	 BR GLIXIT
+
+GLIXIT:	MOV R4,GTLIM
+
+	POP <R5,R4,R0>
+	RTI
+
+.SBTTL Interrupt Handlers - DL-11 Serial Interfaces (Tektronix)
+
+; THESE APPLY PRIMARILY TO DL-11 INTERFACED EIA TTYS
+
+; INTERRUPT ROUTINE FOR OUTPUT TO TTYS
+; CALL WITH R1 CONTAINING A POINTER TO THE STATUS TABLE
+
+	.REPT NTEK
+		.IRP N,\.RPCNT+1
+	TK'N'TIN: PUSH R3
+		  MOV #TEK'N,R3
+		.ENDM
+		BR TKTINT
+	.ENDR
+TKTINT:	PUSH <R0,R1,R2>
+	MOV CHNL(R3),R1
+	MOV DEVICE(R1),R1
+	MOV OD.LIM(R1),R2
+	TST OD.BLK(R1)
+	 BGT 1$
+	CMP R2,OD.PTR(R1)
+	 BNE 1$
+	BIC #INTARM,@OD.STA(R1)	; NOTHING MORE TO DO SO INTERRUPT ENABLE OFF.
+	BR 3$
+
+1$:	CMPB #CTL.L,(R2)	; CHECK FOR ^L (SCREEN CLEAR) (assume it comes
+	 BNE 10$		; only after an altmode.
+	BIC #INTARM,@OD.STA(R1)	; CLOCK ROUTINE WILL REENABLE LATER.
+	INC OD.SLP(R1)		; SO M.P. LEVEL WILL NOT RE-ENABLE TO EARLY
+	MOV R1,R0		; PASS R0 AS AN ARGUMENT TO THE TIMER ROUTINE.
+	PUSH <#%TKSLP,#TEKWAK>	; Run TEKWAK after %TKSLP ticks from now.
+	CALL CQADD		; put it in the timer queue.
+
+10$:	MOVB (R2)+,@OD.BUF(R1)
+	CMP R2,OD.END(R1)
+	 BNE 2$
+	MOV OD.BEG(R1),R2
+2$:	MOV R2,OD.LIM(R1)
+
+	CLR OD.BLK(R1)
+3$:	POP <R2,R1,R0,R3>
+	RTI
+
+TEKWAK:	CLR OD.SLP(R0)		; R0 HAS DEVICE TABLE POINTER FOR THIS TEKTRONIX
+	BIS #INTARM,@OD.STA(R0)	; RE-ENABLE INTERRUPTS
+	RET	
+
+; INTERRUPT ROUTINE FOR INPUT FROM TTYS
+; CALL WITH R1 CONTAINING STATUS BUFFER
+
+	.REPT NTEK
+		.IRP N,\.RPCNT+1
+	TK'N'RIN: PUSH R3
+		  MOV #TEK'N,R3
+		.ENDM
+		BR TKRINT
+	.ENDR
+
+TKRINT:	PUSH R0
+	MOV CHNL(R3),R0
+	MOV DEVICE(R0),R0
+	MOV @RI.BUF(R0),R0	; PICK UP CHARACTER
+	BIC #200,R0		; GET RID OF THAT 8'TH BIT!
+	CALL INRPUT
+	POP <R0,R3>
+	RTI
+
+INRPUT: PUSH <R1,R2>
+	MOV CHNL(R3),R1		; PICK UP POINTER TO TRANSMIT STATUS TABLE 0
+	TST TI.BLK(R1)
+	 BEQ 2$
+	MOV #%TDBEL,SP.FLG(R1)
+	 BR 5$
+2$:	MOV TI.PTR(R1),R2
+	MOV R0,(R2)+			; AND DATA
+	CMP R2,TI.END(R1)
+	 BNE 3$
+	MOV TI.BEG(R1),R2
+3$:	CMP R2,TI.LIM(R1)
+	BNE 4$
+	INC TI.BLK(R1)
+4$:	MOV R2,TI.PTR(R1)
+	CLRB @TI.FLG(R1)
+5$:	MOV #NOP,WAITPL
+	POP <R2,R1>
+	RET
+
+.SBTTL Interrupt Handlers - Keyboard Multiplexor
+
+; CURRENT FORMAT IS THE 3 HIGH BITS ARE KEYBOARD ID.
+; BIT 0 (LOW) IS SHIFT, BIT 1 IS TOP, BITS 2-7 ARE KEY NUMBER,
+; BIT 8 IS CTRL, BIT 9 IS META, BIT 10 IS SHIFT, BIT 11 IS SHIFT LOCK
+; AND BIT 12 IS TOP.  (BITS 13-15 ARE THE ID).
+
+IDBITS==160000
+
+KEY:	.WORD 0
+
+KMXINT:	PUSH <R0,R3>
+KMXIN1:	MOV KMXRBF,KEY		; PICK UP THE DATA
+	CLR KMXTST		; let the checker know something happened.
+	MOVB KEY,R3
+	BIC #MBYTE,R3		; FLUSH SIGN EXTENSION
+	MOVB MTKTAB(R3),KEY	; CONVERT KEY CODE BY TABLE LOOKUP
+
+; NEXT 7 INSTR WILL EVENTUALLY BE: MOVB KEYADR,R3
+	
+	MOV KEY,R3		; FIND TERMINAL ID FROM KEYBOARD ID
+	.REPT 4
+	ROL R3
+	.ENDR
+	BIC #MAXMUX,R3		; GET KEYBOARD ID
+	ASL R3
+	MOV KMXTAB(R3),R3	; FIND TTY LINE ASSOCIATED WITH THIS KBD
+
+	CMPB #%KYESCK,KEY	; CHECK FOR BREAK
+	BNE 1$
+	BITB #<%TXTOP_-7>,KEY+1
+	BEQ 1$
+	 BITB #<%TXMTA_-7>,KEY+1	; C-M-ESC
+	 BEQ 10$
+	  JMP INIT		; SUPER INIT ON CONTROL-META-ESCAPE
+10$:	  CALL INITTY
+	  BR 2$
+
+1$:	BIC #IDBITS,KEY	; CLEAR OUT THE ID BITS
+	MOV KEY,R0
+	CALL INRPUT		; GET ARG FROM R0
+
+	BIT #INTRQB,KMXRST		; ANOTHER INTERRUPT IMMEDIATELY PENDING?
+	 BNE KMXIN1
+2$:	POP <R3,R0>
+	RTI
+
+;;  Keyboard Multiplexor checker (until Hardware is fixed).
+KMXTST:	.WORD 0
+
+KMXCHK:	PUSH <#%KMSLP,#KMXCHK>	; REQUEUE
+	CALL CQADD
+	TST KMXTST		; Has anything happen recently?
+	BNE 1$			; No, better check
+	 INC KMXTST		; Yes, just return
+	 RET
+1$:	MOV KMXRBF,KMXTST	; Read the data register to unhang it.
+	MOV #KMXENI,KMXRST		; ENABLE INTERRUPTS
+	MOV #1,KMXTST
+	RET
+
+.SBTTL Interrupt Handlers - Ann Arbor Displays
+
+;  INTERRUPT ROUTINE FOR OUTPUT TO THE ANN ARBOR DISPLAY CONTROLERS
+
+AADINT:	TST AADRCN		; ARE WE REPEATING SOMETHING?
+	BGT AADIRP		; YES, GO DO IT
+
+	PUSH R2
+	MOV AADTAB+OD.LIM,R2
+	TST AADTAB+OD.BLK
+	BNE 1$			; IF BLOCKED, GO DO SOMETHING
+10$:	CMP AADTAB+OD.PTR,R2	; HAVE WE CAUGHT UP WITH INSERTION POINTER?
+	BNE 1$
+	 BIC #INTARM,AADTST	; THEN TURN OFF INTERRUPT
+	 BR AADIXT
+1$:	PUSH (R2)+		; PUSH A WORD (BITS,,CHAR)
+
+	CMP AADTAB+OD.END,R2	; ARE WE AT END OF BUFFER
+	 BNE 2$
+	MOV AADTAB+OD.BEG,R2	; THEN CIRCLE AROUND TO THE BEGINNING
+2$:	MOV R2,AADTAB+OD.LIM	; UPDATE POINTER (ALWAYS EVEN HERE)
+	CLR AADTAB+OD.BLK
+
+	BIT #%AARPT,(SP)	; IS THIS A REPEAT COMMAND?
+	BEQ 3$			; NO
+	 MOV (SP),R2
+	 BIC #174000,(SP)	; KEEP ONLY UP TO 11 BITS OF COUNT
+	 POP AADRCN		; POP THE STACK INTO AADRCN
+	 BIC #103777,R2		; KEEP SELECT BITS
+	 ASR R2			; MOV THEM INTO POSITION
+	 ASR R2
+	 ASR R2
+	 SWAB R2
+	 MOVB R2,AADRWD+1
+	 POP R2
+	 BR AADIRP
+3$:	POP AADTBF		; POP THE STACK INTO THE INTERFACE
+	BIT #%AAMSK,AADTBF	; CHECK FOR BELL
+	BNE AADIXT		; NOT BELL
+	 BIS #%OSTAB,AADTST	; TOGGLE THE STATUS BIT TO DING THE BELL
+	 BIC #%OSTAB,AADTST
+	 BR 10$			; NO NEED TO WAIT FOR INTERRUPTS
+
+AADIXT:	POP R2
+	RTI
+
+AADIRP:	MOV AADRWD,AADTBF	; SEND IT OUT
+	DEC AADRCN		; MOVE THE COUNT
+	RTI
+
+AADRCN:	.WORD 0			; COUNT FOR A REPEATED WORD
+AADRWD:	SPACE
+
+.SBTTL Interrupt Handlers - Grinnell TVs
+
+; ALWAYS PICK UP 6 WORDS.  FIRST WORD IS A CHANNEL SELECT COMMAND.
+; WE ASSUME ALL BUT THE LAST COMMAND WORK IMMEDIATELY (< 3.6 usecs).
+
+GTVINT:	MOV #%TVNOP,GTVTBF	; Probe the Grinnell box for readiness
+	NOP
+	BIT #INTRQB,GTVTST
+	BNE 10$
+	 RTI
+10$:	TST @TVCSTK		; ANYTHING ON THE CURSOR STACK?
+	BEQ 11$			; NO, DO NORMAL PROCESSING
+	 CALL TVCDO		; GO DO SOMETHING ON THE STACK
+	 RTI
+11$:	PUSH <R2,R3>
+	MOV GTVTAB+OD.LIM,R2
+	TST GTVTAB+OD.BLK
+	BNE 1$
+	 CMP GTVTAB+OD.PTR,R2	; HAVE WE CAUGHT UP WITH INSERTION POINTER?
+	 BNE 1$
+	  BIC #INTARM,GTVTST		; THEN TURN OFF INTERRUPT
+	  BR 3$
+
+1$:	MOV (R2)+,R3
+	MOV #<%TVLUM+%TBNUM>,GTVTBF	; RESTORE NORMAL UPDATE MODE
+	MOV <GTVLDC-GTV1>(R3),GTVTBF	; LOAD DISPLAY CHANNEL
+	MOV <GTVLWM-GTV1>(R3),GTVTBF	; LOAD WRITE MODE
+	MOV (R2)+,GTVTBF	; LOAD LA REGISTER (USUALLY?)
+	MOV (R2)+,GTVTBF	; LOAD EA REGISTER (USUALLY)
+	MOV (R2)+,GTVTBF	; COMMAND OR NOOP
+	MOV (R2)+,GTVTBF	; LOAD LB OR NOOP
+	MOV (R2)+,GTVTBF	; LAST.  LOAD EB + WRITE OR OTHER CMND
+	MOV #%TVNOP,GTVTBF	; PADDING
+	MOV #STRTIM,GTVTIM	; RESET COUNTER FOR CLOCK RESTART
+	CMP GTVTAB+OD.END,R2	; ARE WE AT END OF BUFFER
+	 BNE 2$
+	MOV GTVTAB+OD.BEG,R2	; THEN CIRCLE AROUND TO THE BEGINNING
+2$:	MOV R2,GTVTAB+OD.LIM	; UPDATE POINTER (ALWAYS EVEN HERE)
+	CLR GTVTAB+OD.BLK
+
+3$:	POP <R3,R2>
+	RTI
+
+.SBTTL Interrupt Handlers - Multiplexor Line to the PDP-10
+
+;  INTERRUPT ROUTINE FOR TRANSMIT OUTPUT TO PDP-10 VIA DL-11 
+
+LINEN:	0			; CURRENT LINE NUMBER
+
+NETINT:	PUSH <R0,R2>		; INTERRUPT TRANSMIT DEVICE 0
+	MOV NETTAB+OD.LIM,R2	; PICK LOAD POINTER TO CHARACTER DATA
+	MOVB (R2)+,R0		; PICK UP LINE NUMBER
+	CMPB R0,LINEN
+	 BEQ 1$			; LINE HAS BEEN PREVIOUSLY SELECTED
+	MOVB R0,LINEN		; SEND LINE SELECT BUT DON'T UPDATE POINTER
+	BIC #MBYTE,R0
+	BR 4$
+1$:	MOVB (R2)+,R0		; GET DATA, AND NOW UPDATE POINTER
+	CMP R2,NETTAB+OD.END	; ARE WE AT END OF BUFFER
+	 BNE 2$
+	MOV NETTAB+OD.BEG,R2	; THEN CIRCLE AROUND TO THE BEGINNING
+2$:	CMP R2,NETTAB+OD.PTR	; HAVE WE CAUGHT UP WITH INSERTION POINTER?
+	 BNE 3$
+	BIC #INTARM,NETTST		; THEN TURN OFF INTERRUPT
+3$:	MOV R2,NETTAB+OD.LIM	; UPDATE POINTER (ALWAYS EVEN HERE)
+	CLR NETTAB+OD.BLK
+4$:	MOV R0,NETTBF		; AND PUT OUT CHARACTER
+	POP <R2,R0>
+	RTI
+
+;  INTERRUPT ROUTINE FOR RECEIVE INPUT FROM PDP-10 VIA DL-11 
+;			DEVICE 0
+
+NETINR:	PUSH <R0,R1>
+	MOV NETRBF,R0		; PICK UP CHARACTER
+	JCALL @NETDIS
+
+NETDIS:	.WORD netsel		; DISPATCH
+;; Places NETDIS can point too:
+	.see netsel		;Channel select
+	.see netlen		;Number of characters in block
+	.see netchr		;Process characters
+;;When debug-TTY is being used:
+	.see dbgt1		;Handles character count for dbgtty
+	.see dbgt2		;Continuation processor for dbgtty
+
+NETCNT:	.WORD 0			;Count of characters remaining for this CHNL
+NETCHN:	.WORD 0			;POINTER to CHANNEL table
+
+NETSEL:	BIT #200,R0		;SELECT CHANNEL FOR INPUT
+	 BEQ RST2RT		;NO CHANNEL SELECT WHEN EXPECTED, IGNORE IT.
+1$:	BIC #200,R0		;CLEAR OUT LINE SELECT BIT
+	cmpb #dtty,r0		;Debug tty?
+	 beq dbgtty		;Processing happens directly at interrupt level
+	CMPB R0,#NTTY
+	BLE 2$
+	 br rst2rt
+;	Fatal			; NON-EXISTENT TTY
+2$:	ASL R0			; MAKE A WORD INDEX
+	MOV CHNL(R0),NETCHN
+	MOV #NETLEN,NETDIS
+	br rst2rt
+
+NETLEN:	MOV R0,NETCNT		; GET LENGTH OF BLOCK
+	BNE 1$
+	mov #NETSEL,NETDIS
+	br 2$
+1$:	MOV #NETCHR,NETDIS
+2$:	br rst2rt
+
+NETCHR:	push r2			; Process a received character
+	MOV NETCHN,R1		; Get Channel pointer in R1
+	TST RI.ICN(R1)		; Are we waiting for a continuation?
+	 BEQ 1$
+	JCALL @RI.ICN(R1)	; Yes, continue
+
+1$:	CMPB #RUBOUT,R0		; Is the character a rubout?
+	 BNE NETPUT		; No, go process as a regular character
+	MOV TCTYP(R1),R2	; Get TCTYPE (clobber R2, must restore later)
+	JCALL @NETRO(R2)	; Go do software or non-software tty rubout handling
+
+NETPUT:	MOV RI.PTR(R1),R2	; Get buffer input pointer in R2
+	MOVB R0,(R2)+		; There it goes ... (plop)
+	CMP R2,RI.END(R1)
+	 BNE 1$
+	MOV RI.BEG(R1),R2
+
+1$:	CMP R2,RI.LIM(R1)
+	BNE 2$
+	 br netinc 
+;	Fatal			; DATA OVERRUN, SCREWED ALLOCATION
+
+2$:	MOV R2,RI.PTR(R1)
+	CLRB @RI.FLG(R1)	; SIGNAL MAIN PROGRAM THAT A CHARACTER IS READY
+	MOV #NOP,WAITPL
+
+NETINC:	DEC NETCNT
+	 BGT IN0XIT
+	MOV #NETSEL,NETDIS	; LOOK FOR CHANNEL SELECT NEXT TIME
+
+IN0XIT:	POP r2
+
+RST2RT: pop <r1,r0>		;We put rst2rt in the middle of all its uses so
+	rti			; that it can be branched to easily.
+
+NETRO:	NETPUT		; GOULD, NON SOFTWARE TTY, JUST GO PUT THE CHAR
+	.REPT NTYP-1	; THE REST ARE SOFTWARE TTY'S
+	NETSFT
+	.ENDR
+
+NETSFT:	MOV #NETTDC,RI.ICN(R1)	; FOR SOFTWARE TTY'S, WAIT FOR NEXT CHARACTER
+	BR NETINC
+
+NETTDC:	CLR RI.ICN(R1)		; COME HERE FOR FINISHING %TD CODES
+	ADD #<RUBOUT-1>,R0	; CREATE A CODE > 176
+	BR NETPUT
+
+.SBTTL Debug TTY Handler (Interrupt level)
+
+;;;	The debugging TTY stuff
+
+;;  This routine doesn't use the usual software because I don't want to
+;;   have to decipher its conventions. -s
+
+dbgtty:	mov #dbgt1,netdis	; The debugging "tty"
+	br rst2rt
+
+dbgt1:	mov r0,netcnt		;Save byte count.
+	mov #dbgt2,netdis
+	br rst2rt
+
+;;  Debug TTY continuation processor
+
+;;		How it works.
+;;       The problem is that there are co-operating processes each
+;; of which wants its own control and data structures.  In order to
+;; do that, we give each a PDL.  One process is main program
+;; execution and interrupts other than this one, the other is the
+;; debug-TTY process.  The interface has to allow both to leave off
+;; and resume anywhere.  Packets going to the debug-tty may cross
+;; message-blocks from the ten, and there may be more than one
+;; debug-tty packet in a message-block.  So the debug-tty has its
+;; own stack, kept in SavTPDL when the other stack is in use. 
+;; When the debug-tty wants another character (.iot), it calls
+;; dgtret, which exchanges pdl's and returns from the interrupt.
+;; The next message for the debug TTY will bring about an exchange
+;; of PDL's, and a RET executed on the debug-tty PDL, which will
+;; return to the routine which wanted a character.
+
+.irp reg,<0,1,2,3,4,5,6,7>	;(There is no reasonable way to use rpcnt.)
+savr'reg: .word 0		;This is where MP registers are stored.
+.endm
+savpsw:	.word 0			;MP psw
+savsp=savr6
+savpc=savr7
+
+;; Dbgt2 handles getting back into debug-tty process.
+
+;At this point, the psw, the pc, r0, and r1 have been
+;pushed onto the stack: we want debugger to see the machine
+;as it was before the interrupt, so we pop them into
+;special locations, leaving the Pdl free for control
+;information.  Saving away like this also makes 
+;and error handling easier.
+dbgt2:	pop <savr1,savr0,savpc,savpsw>	;Make MP info accessible.
+	mov sp,savsp	;Contains pre-interrupt sp
+	mov SavTPdl,sp	;Restore debug-tty PDL
+	jcall @(sp)+	;Continue
+
+dgtent:	pop <savpc,savpsw>	;Entry from an error interrupt.
+	mov sp,savsp
+	mov SavTPdl,sp
+	cmp #dbt,(sp)		;Are we already inside Hali?
+	beq 1$			;No
+	halt
+;Not doing this would be tremendously hairy: Hali would have to know,
+;or else the Hali operation would have to be finished, when it could
+;have been that very Hali operation that killed us.  Thus we halt.
+;Note that Fatal is not the right thing, as that would recurse!
+;Of course, unless Hali has a bug, or net output is hung up, or
+;hali is doing lots of commands (like loading), this isn't very
+;likely.
+1$:	;??????
+
+
+
+
+
+
+;; Dgtret returns to MP process.
+
+dgtret:	mov sp,SavTPdl		;Save Pdl
+	mov savsp,sp		;Restore main Pdl
+	push <savpsw,savpc,savr0,savr1>
+	dec netcnt		;End of this string?
+	bgt rst2rt		;No, leave Netdis alone.
+	mov #netsel,netdis	;Yes, back to normal Netint handling.
+	br rst2rt
+
+;;  Body of Debugging TTY stuff
+
+;; Dbt: decode debugger instruction and dispatch.
+dbt0:	call dgtret	;Get next command (first time through we already
+				;have one (at dbt))
+dbt:	bit #200,r0
+	beq dbt0	;Commands are always 200+x
+	bic #200,r0
+	cmp r0,#maxhl	;Largest hali code
+	bhi dbt0	;Ignore randomness
+	asl r0		;convert to word number
+	call @dbtab(r0)	;dispatch
+	br dbt0
+
+dbtab:	.irp y,<terr,read,write,terr,stop,continue,sstep,dmpreg,ldreg>
+	  .word db'y
+	.endm
+
+	maxhl==.-dbtab-1
+
+dbterr:	Fatal
+;If we really don't recognize the code, we must stop.
+
+
+;; Handle hl.read
+dbread:	call dbgtwd	;Get address
+	asl (sp)
+	mov @(sp),(sp)	;Read
+	call dbsend	;Send contents
+	ret
+
+;; Handle hl.write
+dbwrite: call dbgtwd	;Get address
+	asl (sp)
+	mov @(sp),-(sp)	;Old contents
+	call dbsend	;Send
+	call dbgtwd	;Get new contents
+	mov (sp)+,@(sp)+  ;Write
+	ret
+
+;; Handle hl.stop
+dbstop:	mov savpc,-(sp)
+	call dbsend		;Return PC
+dbistp:	mov savpsw,osavps	;Internal stop entry
+	mov #stopps,savpsw	;Wait for another Hali command.
+	mov savpc,osavpc
+	mov #fakemp,savpc
+	ret
+
+STOPPS==0 ;???
+
+fakemp: wait		;Fake M.P. for stopping
+	br fakemp
+
+;; Handle hl.continue
+dbcontinue: mov osavpc,savpc
+	mov osavps,savpsw
+	ret
+
+osavpc:	.word fakemp	;In case we try to do continue randomly.
+osavps:	.word stopps
+
+ttbit==20	;Trace trap bit
+
+;; Handle hl.sstep
+dbsstep: mov osavpc,savpc	;Go back to where we were running.
+	mov osavps,savpsw
+	bis #ttbit,savpsw	;This is the one-proceed bit
+	ret			;Returns to bpttrp through 14
+;;	next instruction executed is the ^N'ed instruction, then:
+;;What if we get a net interrupt here?
+bpttrp:	pop <osavpc,osavps>
+	mov r0,savr0		;In effect, this is part of dbsstep
+	mov r1,savr1	
+	mov savtpdl,sp
+	mov osavpc,r0
+	sub #2,r0
+	mov (r0),r1		;Possibly a bpt
+	cmp r0,#<bpt>
+	beq realbp
+
+realbp:	Fatal
+
+;; Handle hl.dmpreg
+dbdmpreg: Fatal
+
+;; Handle hl.ldreg
+dbldreg: Fatal
+
+;; Get a word from the 10.
+dbgtwd:	mov (sp),-(sp)
+	call dgtret	;Get a byte
+	mov r0,2(sp)	;Stack up
+	call dgtret	; another
+	movb r0,3(sp)	;Put together result
+	ret
+
+;; Send word on top of stack to 10
+dbsend:	mov 2(sp),r0	;Bytes are backwards here but will be sent forwards
+	bic #177700,r0	; since we are backing up the output list.
+	call hksend	;Third byte
+	mov 2(sp),r0
+	bic #174077,r0
+	.rept 6
+	  asr r0
+	.endr
+	call hksend	;Second byte
+	movb 3(sp),r0
+	.rept 3
+	  asr r0
+	.endr
+	mov (sp)+,(sp)	;Throw away argument (replace with return address)
+;	jcall hksend	;First byte
+
+
+;; Send byte in r0 to 10 in hackish way: back up buffer pointer.
+;;  If you fail, lose.
+
+hksend:	bic #177600,r0		; Make sure character cannot be mistaken
+				; as line select
+	bis #100,r0		;Don't ever send ^Z or ^_
+	mov <nettab+od.lim>,r1	;Get buffer readout pointer
+	cmp r1,nettab+od.beg	;at beginning?
+	bne 1$
+	 mov nettab+od.end,r1	;then go back to end
+1$:	sub #2,r1
+	mov r1,nettab+od.lim	;back up write pointer
+	movb #<200+dtty>,(r1)+	;write in select
+	movb r0,(r1)+		; and data byte.
+;	cmp r1,nettab+od.ptr	;caught up to write-in pointer?
+;	bne 2$
+;	 inc nettab+od.blk	;If so, set block indication
+2$:	bis #intarm,nettst
+	ret
+
+hklose:	Unmask
+	Fatal
+
+.SBTTL Lab interface interrupt routines
+
+LB1RCV:	PUSH R0
+	CLR R0			; OFFSET FOR THE FIRST DEVICE
+	BR LABRCV
+LB2RCV:	PUSH R0
+	MOV #2,R0		; OFFSET FOR THE SECOND DEVICE
+
+LABRCV:	PUSH R1			; GET REGISTER
+	PUSH R2
+	MOV R0,R1		; MAKE A POINTER TO THE DEVICE
+	ASL R1
+	ADD #LB1CSR,R1		; NOW POINTS TO LB1CSR IF IT WAS DEVICE 0,
+				; LB2CSR IF IT WAS 1
+	PUSH (R1)+		; PUSH THE CSR FOR THE TOP TWO BITS
+	COM (SP)		;BITS ARE INVERTED
+	MOV (R1),R1		; PICK UP THE MAIN WORD
+	COM R1
+	MOV LABPNT(R0),R2	; GET THE OFFSET TO THIS BUFFER
+	TST R0			; WAS IT BUFFER 2?
+	BEQ 1$			; NO THE OFFSETS ARE CORRECT BELOW
+	ADD #LABBF3-LABBF0,R2	; MODIFY THE BUFFER OFFSET
+1$:	PUSH R1			;SAVE THE FIRST WORD
+	BIC #177700,R1		;CLEAR ALL BUT THE BOTTOM 6 BITS
+	MOVB R1,LABBF0(R2)	;PUT THE BYTE AWAY FOR THE FIRST BIOMATION
+	MOV (SP),R1		;GET BACK THE WORD
+	ASL R1
+	ASL R1
+	SWAB R1			;PICK THE NEXT 6 BITS
+	BIC #177700,R1		;AND STORE THEM AWAY
+	MOVB R1,LABBF1(R2)	;STORE IT ALSO
+	POP R1			;GET BACK THE BOTTOM WORD AGAIN
+	BIC #7777,R1		;CLEAR ALL BUT THE TOP 4 BITS
+	CLC
+	ROR R1
+	ROR R1			;MAKE ROOM FOR THE TOP 2 BITS
+	BIC #37777,(SP)		;CLEAR ALL BUT THE TOP BITS ON THE SP
+	BIS (SP)+,R1		;AND SET THEM IN
+	SWAB R1			;INTO THE LOW BYTE
+	ASR R1
+	ASR R1
+        BIC #300,R1
+	MOVB R1,LABBF2(R2)	;AND BUFFER THEM LAST
+	MOV LABPNT(R0),R1	;GET THE POINTER
+	INC R1			;AND INCREMENT IT
+	CMP R1,#255.		; HAS IT REACHED THE END YET?
+	BLO 2$			;NOT YET
+	MOVB LABBF0(R2),LABBF0+1(R2)
+	MOVB LABBF1(R2),LABBF1+1(R2)
+	MOVB LABBF2(R2),LABBF2+1(R2)
+	CLR R1
+2$:	MOV R1,LABPNT(R0)	;RESTORE THE POINTER
+	POP R2			;POP REGS AND RETURN
+	POP R1
+	POP R0
+	RTI
+
+.SBTTL Main Program Channel Processing - Remote -> Local Device
+
+;  MAIN PROGRAM ROUTINE FOR RECEIVED CHARACTER PROCESSING 
+;  Called with Channel index in R3 (= channel number * 2).
+;  R1 holds a pointer to the channel table, R5 holds channel TCTYPE.
+
+MPCPRL:	MOV CHNL(R3),R1		; GET POINTER TO RECEIVE STATUS BLOCK
+	MOV TCTYP(R1),R5	; Put TCTYP in R5 for convenient dispatching
+	MOV DEVICE(R1),R4	; TEST FOR OUTPUT BLOCKAGE
+	TST OD.BLK(R4)
+	BEQ 1$
+	 RET
+
+1$:	TST RS.CNT(R1)		; CHECK FOR BUFFERED CHARS
+	 BNE RTSTRH
+
+	TST SP.FLG(R1)		; TEST FOR SPECIAL INTERNALLY GENERATED 8 BIT CODES
+	 BEQ RCHGET
+
+	MOV SP.FLG(R1),R0	; DON'T ALLOW CODES THAT REQUIRE ARGS LIKE %TDMOV
+	CLR SP.FLG(R1)
+	JCALL CHRTST
+
+RTSTRH:	MOV @RS.PTR(R1),R0	; GET DATA FROM THE BUFFER
+	DEC RS.CNT(R1)
+	 BNE 1$			; COUNTED OUT?
+
+	MOV RS.TBF(R1),RS.PTR(R1)	; YES, RESTORE THE BUFFER POINTER AND 
+	BR 2$			; GO PROCESS LAST CHAR
+
+1$:	INCW RS.PTR(R1)		; INC WORD POINTER
+
+2$:	JCALL @RTYPUT(R5)
+
+RCHGET:	MOV RI.LIM(R1),R2
+	MOVB (R2)+,R0		; PICK UP CHARACTER
+	BIC #MBYTE,R0		; clear sign extension
+
+	CMP R2,RI.END(R1)	; ARE WE AT THE END OF THE BUFFER?
+	BNE 1$
+	 MOV RI.BEG(R1),R2	; CIRCLE AROUND TO BEGINNING THEN
+1$:	MOV R2,RI.LIM(R1)	; UPDATE POINTER
+	CMP #RUBOUT,R0		; CODE >= 177?
+	BGT 10$
+	 DEC ALNUM(R1)		; 177-376 COUNT AS 2 CHARACTERS
+10$:	DEC ALNUM(R1)		; UPDATE ALLOCATION
+	BGT 2$
+	 INC ALSCRW
+	 JCALL INITRI
+2$:	CMP ALNUM(R1),#ALCLIM	; NEED TO ALLOCATE CHARACTERS?
+	BGE 3$
+	 MOV #%ITCAL,R2		; PUT INCREMENT TTY CHAR ALLOC COMMAND
+	 ADD #ALCINC,ALNUM(R1)
+	 CALL ALCPUT		; PUT IT IN THIS CHANNEL'S INPUT BUFFER
+
+3$:	CMP #%TDORS,R0
+	BNE 4$
+	 CMP #TDQOTC,RI.CON(R1)	; QUOTED?
+	 BEQ 4$			; YES, CONTINUE
+	  JCALL INITRI		; GO RESET THE CHANNEL
+4$:	TST RI.CON(R1)		; CONTINUATION?
+	 BEQ CHRTST
+	JCALL @RI.CON(R1)	; YES, GO DO IT.
+
+CHRTST:	CMP #RUBOUT,R0
+	BGT 1$
+	 SUB #RUBOUT,R0		; NORMALIZE
+	 ASL R0			; MAKE IT INTO A WORD OFFSET
+	 CMP #TDMAX,R0		; CHECK FOR ENTRY WITHIN TABLE
+	 BLE TDNOOP
+	  JCALL @TDTAB(R0)	; DISPATCH ON TD CODE (THEN LATER ON TCTYP)
+
+1$:	CMPB #40,R0		; CONTROL CHAR?
+	 BLE 2$
+	JCALL @CTLTAB(R5)	; DISPATCH ON TCTYP FOR CTRL CHAR HANDLING
+
+2$:	INC COL(R1)		; ORDINARY CHARS COME HERE.
+	JCALL @ASCTAB(R5)	; DISPATCH ON TCTYP FOR ORDINARY CHARACTERS
+
+	BEGTAB			; BEGIN ENTRIES IN TABLE SPACE
+
+; Dispatch table for handling regular ascii characters
+
+ASCTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	ASCTEK			; %TCTEK - SPECIAL HACKS??
+	ASCIML			; %TCIML - SPECIAL HACKS FOR IMLAC INTERFACE
+	ASCAAD			; %TCAAD - HANDLE LAST COLUMN CORRECTLY
+	ASCGTV			; %TCGTV - GENERATE GTV COMMANDS
+	ERROR			; %TCDEV - DEVICE TTY
+
+; Dispatch table for handling control characters (< 40)
+
+CTLTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	CTLTEK			; %TCTEK - SPECIAL TEKTRONIX HANDLING
+	CTLIML			; %TCIML - SPECAIL IMLAC HANDLING
+	CTLAAD			; %TCAAD - ANN ARBOR CTRL CHAR HANDLING
+	CTLGTV			; %TCGTV - GTV
+	ERROR			; %TCDEV - DEVICE TTY
+
+; Dispatch table for handling %TD codes
+
+TDTAB:	TDRO		; RUBOUT - (XGP sim??)
+	TDMOV		; %TDMOV - specifies abs. cursor pos.
+	TDMV1		; %TDMV1 - 2 byte type of cursor pos
+	TDEOF		; %TDEOF - delete to end of screen
+	TDEOL		; %TDEOL - delete to end of line
+	TDDLF		; %TDDLF - delete char to left of cursor
+	TTYESC		; %TDMTF - but use as special escape code
+	LSPESC		; %TDMTN - LISP display slave escape code 
+	TDCRL		; %TDCRL - CRLF
+	TDNOOP		; %TDNOP - NO OP FOR FILLER CHARS
+	TDBS		; %TDBS  - AN OVERSTRIKING BS
+	TDLF		; %TDLF  - A REAL LF
+	TDCR		; %TDCR  - AN OVERSTRIKING CR
+	TDORS		; %TDORS - OUTPUT RESET (DOESN'T GET HERE!)
+	TDQOT		; %TDQOT - quote an 8-bit char (??)
+	TDFS		; %TDFS  - move forward one space
+	TDMV0		; %TDMV0 - 2 byte cursor positioning
+	TDCLR		; %TDCLR - clear the screen
+	TDBEL		; %TDBEL - ring the bell
+	TDINI		; %TDINI - initialize the tty
+	TDILP		; %TDILP - insert line position
+	TDDLP		; %TDDLP - delete line position
+	TDICP		; %TDICP - insert character position
+	TDDCP		; %TDDCP - delete character position
+	TDBOW		; %TDBOW - Black on White (actually, highlight chars)
+	TDRST		; %TDRST - Reset special modes (like BoW)
+	TDNOOP		; 231 - NOT ASSIGNED YET
+	TDNOOP		; 232 - NOT ASSIGNED YET
+	TDBTS		; %TDBTS - write 8 bits across (for Grinnell)
+	TDXGM		; %TDXGM - exit graphics mode
+	TDGSP		; %TDGSP - enter set point graphics mode
+	TDGLV		; %TDGLV - enter long vector mode
+	TDGSV		; %TDGSV - enter short vector mode
+	TDPAD		; %TDPAD - (not an I.T.S. code) generate padding
+	TDNOOP
+TDMAX==.-TDTAB
+
+	ENDTAB			; END ENTRIES IN TABLE SPACE
+
+.sbttl Software TTY Display Code Routines
+
+TDRO:			; RUBOUT - (XGP sim??)
+	MOV #RUBOUT,R0
+	JCALL @ASCTAB(R5)	; JUST GO PUT IT FOR NOW
+
+TDMOV:			; %TDMOV - specifies abs. cursor pos.
+	MOV #TDMO1,RI.CON(R1)
+	BR TDEXIT
+
+TDMV1:			; %TDMV1 - 2 byte type of cursor pos
+	BR TDMV0
+
+TDEOF:			; %TDEOF - delete to end of screen
+	JCALL @EOFTAB(R5) ; DISPATCH ON TCTYP
+
+TDEOL:			; %TDEOL - delete to end of line
+	JCALL @EOLTAB(R5) ; DISPATCH ON TCTYP
+
+TDDLF:			; %TDDLF - delete char to left of cursor
+	JCALL @DLFTAB(R5)
+
+TTYESC:			; %TDMTF - but use as special escape code
+
+LSPESC:			; %TDMTN - LISP display slave escape code 
+	BR TDNOOP
+
+TDCRL:			; %TDCRL - CRLF
+	CLR COL(R1)
+	INC ROW(R1)		; CHECK FOR END OF SCREEN??
+	MOV #%TDEOL,SP.FLG(R1)	; DO CLEAR EOL NEXT TIME
+	JCALL @ACPTAB(R5)	; ASSUME ALL EOL ROUTINES DO CPOS FIRST!
+
+TDNOOP:			; %TDNOP - NO OP FOR FILLER CHARS
+	BR TDEXIT
+
+TDBS:			; %TDBS  - AN OVERSTRIKING BS
+	DEC COL(R1)
+	 BGE 1$
+	CLR COL(R1)
+1$:	JCALL @ACPTAB(R5)
+
+TDLF:			; %TDLF  - A REAL LF
+	INC ROW(R1)		; CHECK FOR EOS??
+	JCALL @ACPTAB(R5)
+
+TDCR:			; %TDCR  - AN OVERSTRIKING CR
+	CLR COL(R1)
+	JCALL @ACPTAB(R5)
+
+TDORS:			; %TDORS - OUTPUT RESET 
+	CALL INITRI	; shouldn't get here!
+	BR TDEXIT
+
+TDQOT:			; %TDQOT - TREAT THE NEXT CHAR AS ASCII
+	MOV #TDQOTC,RI.CON(R1) ; ASCCHR DOESN'T CLEAR RI.CON(R1)!!
+	BR TDEXIT
+
+TDFS:			; %TDFS  - move forward one space
+	INC COL(R1)
+	JCALL @ACPTAB(R5)
+
+TDMV0:			; %TDMV0 - 2 byte cursor positioning
+	MOV #TDMV0R,RI.CON(R1)	; GET ROW BYTE NEXT TIME
+	BR TDEXIT
+
+TDCLR:			; %TDCLR - clear the screen
+	CLR ROW(R1)
+	CLR COL(R1)
+	JCALL @CLRTAB(R5)	; DISPATCH ON TCTYP
+
+TDBEL:			; %TDBEL - ring the bell
+	JCALL @BELTAB(R5)
+
+TDINI:			; %TDINI - initialize the tty
+	CALL INITTY	; INITIALIZE THIS TTY
+	BR TDEXIT
+
+TDILP:
+TDDLP:
+TDICP:
+TDDCP:	MOV #TDCNT,RI.CON(R1)
+	BR TDEXIT	; these are all no-ops (must gobble a count)
+
+TDBOW:	CMP #%TCGTV,R5
+	BNE TDEXIT	; Only implemented for TV's for now
+	XOR <#%TBWBG+%TBWOR>,<<GTVLWM-GTV1>(R3)>
+	BR TDEXIT
+
+TDRST:	CMP #%TCGTV,R5
+	BNE TDEXIT	; Only implemented for TV's for now
+	MOV <GTVBGD-GTV1>(R3),<GTVLWM-GTV1>(R3)
+	BR TDEXIT
+
+tdbts:	mov #tdbts1,ri.con(r1)	;Write eight bits across on Grinnell
+	br tdexit
+tdbts1: push r0
+	add #%tvwgd,(sp)
+	mov #1,r0
+	clr ri.con(r1)
+	CALL GTVGXY
+	add #8,xpos(r1)
+	jcall gtvput
+
+TDXGM:			; %TDXGM - exit graphics mode.  A noop.
+	CLR COL(R1)
+	BR TDEXIT
+
+TDGSP:			; %TDGSP - enter set point graphics mode
+	MOV #GSPDO,ARDCON(R1)	; SAVE CONTINUATION FOR LATER USE
+TDG:	MOV #ARDSX1,RI.CON(R1)		; NEXT CONTINUATION WAITS FOR X1
+	BR TDEXIT
+
+TDGLV:			; %TDGLV - enter long vector mode
+	MOV #GLVDO,ARDCON(R1)	; SAVE CONTINUATION FOR LATER USE
+	BR TDG
+
+TDGSV:			; %TDGSV - enter short vector mode
+	MOV #GLVDO,ARDCON(R1)	; SAME AS LONG VECTOR
+	MOV #SVX1,RI.CON(R1)		; NEXT CONTINUATION GETS SV X1
+	BR TDEXIT
+
+TDPAD:			; %TDPAD - special internal padding hacks
+	JCALL @PADTAB(R5)
+
+; Utility routines for the above %TD handlers
+
+TDEXIT:	JCALL RCKBUF
+
+TDMO1:	MOV #TDMO2,RI.CON(R1)	; THROW AWAY THIS BYTE (PART OF OLD POS)
+	BR TDEXIT
+
+TDMO2:	MOV #TDMV0R,RI.CON(R1)	; THROW AWAY ANOTHER BYTE (PART OF OLD POS)
+				; NEXT TIME CONTINUE AS IF TDMV0 (GET ROW BYTE)
+	BR TDEXIT
+
+TDMV0R:	DEC R0
+	MOV R0,ROW(R1)
+	MOV #TDMV0C,RI.CON(R1)	; NEXT TIME GET COLUMN BYTE
+	BR TDEXIT
+
+TDMV0C:	CLR RI.CON(R1)
+	DEC R0
+	MOV R0,COL(R1)
+	JCALL @ACPTAB(R5)	; DISPATCH ON TCTYP TO ABSOLUTE CURSOR POS ROUTINE
+
+TDQOTC:	CLR RI.CON(R1)
+	JCALL @ASCTAB(R5)	; GO PUT THE CHARACTER
+
+TDCNT:	CLR RI.CON(R1)	; JUST GOBBLE UP A COUNT AND RETURN
+	BR TDEXIT
+
+	BEGTAB			; BEGIN ENTRIES IN TABLE SPACE
+
+ACPTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	ACPTEK			; %TCTEK - SHOULDN'T EVER GET HERE
+	ERROR			; %TCIML - SHOULDN'T EVER GET HERE
+	ACPAAD			; %TCAAD - ANN ARBOR
+	ACPGTV			; %TCGTV - GTV'S
+	ERROR			; %TCDEV - SHOULDN'T EVER GET HERE
+
+EOFTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	TDEXIT			; %TCTEK - NO OP ON TEK'S
+	ERROR			; %TCIML - SHOULDN'T GET HERE
+	EOFAAD			; %TCAAD - ANN ARBOR
+	EOFGTV			; %TCGTV - GTV
+	ERROR			; %TCDEV - SHOULDN'T EVER GET HERE
+
+
+EOLTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	TDEXIT			; %TCTEK - NO OP ON TEK'S
+	ERROR			; %TCIML - SHOULDN'T EVER GET HERE
+	EOLAAD			; %TCAAD - ANN ARBOR
+	EOLGTV			; %TCGTV - GTV
+	ERROR			; %TCDEV - SHOULDN'T EVER GET HERE
+
+DLFTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	TDEXIT			; %TCTEK - NO OP ON TEK'S
+	ERROR			; %TCIML - SHOULDN'T EVER GET HERE
+	DLFAAD			; %TCAAD - ANN ARBOR
+	DLFGTV			; %TCGTV - GTV
+	ERROR			; %TCDEV - SHOULDN'T EVER GET HERE
+
+BELTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	BELTEK			; %TCTEK - JUST SEND ^G
+	ERROR			; %TCIML - SHOULDN'T EVER GET HERE
+	MPXBEL			; %TCAAD - ANN ARBOR
+	MPXBEL			; %TCGTV - GTV
+	ERROR			; %TCDEV - SHOULDN'T EVER GET HERE
+
+CLRTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	CLRTEK			; %TCTEK - ALTMODE ^L PLUS PADDING
+	ERROR			; %TCIML - SHOULDN'T EVER GET HERE
+	CLRAAD			; %TCAAD - ANN ARBOR DISPLAY
+	CLRGTV			; %TCGTV - GRINNELL TV
+	ERROR			; %TCDEV - SHOULDN'T EVER GET HERE
+
+PADTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	PADTEK			; %TCTEK - CONVERT TO TEKTRONIX GRAPHICS
+	ERROR			; %TCIML - SHOULDN'T EVER GET HERE
+	PADAAD			; %TCAAD - ANN ARBOR DISPLAY
+	PADGTV			; %TCGTV - GRINNELL TV
+	ERROR			; %TCDEV - SHOULDN'T EVER GET HERE
+
+GLVTAB:	ERROR			; %TCGLD - SHOULDN'T EVER GET HERE
+	GLVTEK			; %TCTEK - CONVERT TO TEKTRONIX GRAPHICS
+	ERROR			; %TCIML - SHOULDN'T EVER GET HERE
+	GLVAAD			; %TCAAD - ANN ARBOR DISPLAY
+	GLVGTV			; %TCGTV - GRINNELL TV
+	ERROR			; %TCDEV - SHOULDN'T EVER GET HERE
+
+	ENDTAB			; END ENTRIES IN TABLE SPACE
+
+.SBTTL Software TTY Graphics
+
+ARDSX1:	CALL ARDSCK
+	MOV #ARDSX2,RI.CON(R1)
+	CALL ARDS1
+	MOV R0,ARDSX(R1)
+	JCALL TDEXIT
+
+ARDSX2:	CALL ARDSCK
+	MOV #ARDSY1,RI.CON(R1)
+	CALL ARDS2
+	BIS R0,ARDSX(R1)
+	JCALL TDEXIT
+
+ARDSY1:	CALL ARDSCK
+	MOV #ARDSY2,RI.CON(R1)
+	CALL ARDS1
+	MOV R0,ARDSY(R1)
+	JCALL TDEXIT
+
+ARDSY2:	CALL ARDSCK
+	MOV #ARDSX1,RI.CON(R1)
+	CALL ARDS2
+	BIS R0,ARDSY(R1)
+	BR ARDSDO
+
+SVX1:	CALL ARDSCK
+	MOV #SVY1,RI.CON(R1)
+	CALL ARDS1
+	MOV R0,ARDSX(R1)
+	JCALL TDEXIT
+
+SVY1:	CALL ARDSCK
+	MOV #SVX1,RI.CON(R1)
+	CALL ARDS1
+	MOV R0,ARDSY(R1)
+	BR ARDSDO
+
+
+ARDSCK:	BIT #200,R0		; TEST FOR %TD CODES
+	 BNE 1$
+	BIT #140,R0		; TEST FOR CONTROL CHARS
+	 BEQ 1$
+	RET
+1$:	TST (SP)+		; THROW AWAY THE RETURN
+	CLR RI.CON(R1)
+	JCALL CHRTST
+
+ARDS1:	BIT #ARDNEG,R0
+	 BEQ 1$
+	BIS #ARDSGN,R0
+1$:	ASRB R0
+	BICB #340,R0
+	RET
+
+ARDS2:	SWAB R0			; LEAVE 40 BIT THERE
+	ASR R0
+	ASR R0
+	ASR R0
+	BIC #174037,R0		; SAVE THE 40 BIT IN THE WORD
+	RET
+
+ARDSDO:	PUSH ARDCON(R1)				; PUSH SAVED CONTINUATION
+	MOV #1,R4		; R4 = 0 MEANS INVISIBLE
+	BIT #ARDTYP,ARDSX(R1)
+	 BEQ 1$			; BIT NOT = 0 MEANS INVISIBLE
+	CLR R4
+	BIC #ARDTYP,ARDSX(R1)
+1$:	BIT #ARDSGN,ARDSX(R1)
+	 BEQ 2$
+	BIC #ARDSGN,ARDSX(R1)
+	NEG ARDSX(R1)
+2$:	BIC #ARDTYP,ARDSY(R1)	; DON'T HACK DOTTED LINES NOW
+	BIT #ARDSGN,ARDSY(R1)
+	 BEQ 3$
+	BIC #ARDSGN,ARDSY(R1)
+	NEG ARDSY(R1)
+3$:	RET					; CONTINUE
+
+GSPDO:	MOV ARDSX(R1),XPOS(R1)	; JUST UPDATE AND RETURN
+	ADD #%ARCTR,XPOS(R1)
+	MOV ARDSY(R1),YPOS(R1)
+	ADD #%ARCTR,YPOS(R1)
+	JCALL RCKBUF		; DON'T ACTUALLY DO IT NOW
+
+GLVDO:	MOV XPOS(R1),R0
+	MOV YPOS(R1),R2
+	ADD ARDSX(R1),XPOS(R1)
+	ADD ARDSY(R1),YPOS(R1)
+	TST R4			; IF INVISIBLE, RETURN DOING NOTHING
+	BNE 1$
+	 JCALL RCKBUF		; RETURN DOING NOTHING
+1$:	JCALL @GLVTAB(R5)	; DO A VECTOR
+
+
+.SBTTL Tektronix Display Routines
+
+; ASCII character handlers
+
+ASCTEK:	ADD #%TKCWD,XPOS(R1)
+	JCALL TEKPUT
+
+; Control character handler
+
+CTLTEK:	CMP #%TKEGM,R0
+	 BNE 1$
+
+	MOV #TEKGRC,RI.CON(R1)	; HANDLE ALL CHARS IN GRAPHICS MODE.
+	JCALL TEKPUT
+
+1$:	CMP #CR,R0
+	 BNE 2$
+	CLR COL(R1)
+	JCALL TEKPUT		; OTHERWISE JUST PUT IT OUT
+
+2$:	CMP #LF,R0
+	 BNE 3$
+	INC ROW(R1)		; CHECK FOR WRAPAROUND??
+	JCALL TEKPUT
+
+3$:	CMP #BS,R0
+	 BNE 4$
+	DEC COL(R1)
+	 BGE 4$
+	CLR COL(R1)
+
+; SHOULD ALTMODE COMMANDS BE HACKED IN SOME WAY???
+4$:	JCALL TEKPUT
+
+TEKGRC:	CMP #CR,R0
+	BNE 1$
+	 CLR COL(R1)		; CR EXITS AND DOES CR
+	 CLR XPOS(R1)
+	 BR TEKGRX
+1$:	CMP #%TKXGM,R0		; %TKXGM EXITS QUIETLY
+	BEQ TEKGRX
+
+	CMP #ALTMODE,R0
+	BNE 2$
+	 JCALL TEKPUT		; DON'T PAD ALTMODE COMMANDS
+2$:	CMP #RUBOUT,R0
+	BGE 3$
+	 CLR RI.CON(R1)		; 200 CODES GO BACK FOR REPROCESSING
+	 JCALL CHRTST
+3$:	MOV RS.PTR(R1),R2
+	MOV R0,(R2)+
+	MOV #CTL.V,(R2)+	; PAD ALL GRAPHICS
+	MOV #2,RS.CNT(R1)
+	JCALL RTSTRH
+
+TEKGRX:	CLR RI.CON(R1)
+	JCALL TEKPUT
+
+ACPTEK:	CMP #%TDFS,R0		; SPECIAL OPTIMIZATION FOR %TDFS (SPACE)
+	BEQ SPCTEK
+	CMP #%TDCRL,R0		; SPECIAL OPTIMIZATION FOR %TDCRL (TERPRI)
+	BNE 10$
+	MOV RS.PTR(R1),R4
+	MOV #CR,(R4)+
+	MOV #LF,(R4)+
+	MOV #2,RS.CNT(R1)
+	JCALL RTSTRH
+
+10$:	MOV COL(R1),R0		; CONVERT H POS BY MULTIPLYING BY 14.
+	 BEQ 1$
+	.REPT 4			; MULTPLY BY 16
+	ASL R0
+	.ENDR
+	SUB COL(R1),R0		; THEN SUBTRACT TWICE
+	SUB COL(R1),R0
+1$:	MOV ROW(R1),R2		; CONVERT V POS BY MULTIPLYING BY 22.
+	 BEQ 2$
+	ASL R2			; MULTIPLY BY 8
+	ASL R2
+	ASL R2
+	MOV R2,R4		; MULTIPLY BY 3
+	ADD R4,R2
+	ADD R4,R2
+	SUB ROW(R1),R2		; SUBTRACT 2 = 22.
+	SUB ROW(R1),R2
+	NEG R2
+2$:	ADD #%TKHOM,R2	; REFLECT COORDS
+	MOV R0,XPOS(R1)
+	MOV R2,YPOS(R1)
+	PUSH #TEKXGM
+	JCALL TEKVEC
+
+; TEKTRONIX GRAPHICS ROUTINES
+
+TEKXGM:	MOV #CTL.V,(R4)+
+	MOV #%TKXGM,(R4)+	; PUT OUT EXIT GRAPHICS
+	ADD #2,RS.CNT(R1)		; ACCOUNTS FOR EGM COMMAND ALSO.
+	JCALL RTSTRH
+
+TEKVEC:	MOV RS.PTR(R1),R4	; CALL WITH R0=X, R2=Y
+	MOV #%TKEGM,(R4)+	; ENTER GRAPHICS (TEKMAK = TECMAC??)
+	MOV #1, RS.CNT(R1)
+;	JCALL TEKMAK
+
+TEKMAK:	MOV R2,(R4)		; PUT OUT Y.  MSB FIRST.
+	.REPT 5
+	ASR (R4)
+	.ENDR
+	BIC #MASK37,(R4)
+	BIS #%TKHIY,(R4)+
+	MOV R2,(R4)
+	BIC #MASK37,(R4)		; NOW PUT OUT LSB
+	BIS #%TKLOY,(R4)+
+	MOV R0,(R4)		; PUT OUT X.  MSB FIRST.
+	.REPT 5
+	ASR (R4)
+	.ENDR
+	BIC #MASK37,(R4)
+	BIS #%TKHIX,(R4)+
+	MOV R0,(R4)
+	BIC #MASK37,(R4)		; NOW PUT OUT LSB
+	BIS #%TKLOX,(R4)+
+	ADD #4,RS.CNT(R1)
+	RET
+
+GLVTEK:	CALL TEKVEC
+	MOV XPOS(R1),R0
+	MOV YPOS(R1),R2
+	PUSH #TEKXGM		; PUSH THE CONTINUATION ADDRESS
+	JCALL TEKMAK
+
+SPCTEK:	MOV #SPACE,R0
+	JCALL TEKPUT
+
+BELTEK:	MOV #CTL.G,R0
+	JCALL TEKPUT
+
+CLRTEK:	CLR XPOS(R1)
+	MOV #%TKHOM,YPOS(R1)
+	MOV RS.PTR(R1),R2	; BUFFER UP $^L.  WAIT TIMING IS HANDLED
+	MOV #%TKESC,(R2)+	; AT INTERRUPT LEVEL.
+	MOV #%TKCLR,(R2)+
+	ADD #2,RS.CNT(R1)
+	JCALL RTSTRH		; CONTINUE ON TO THE STRING HANDLER
+
+PADTEK:	MOV #CTL.V,R0
+	DEC PADCNT(R1)
+	 BLE 1$
+	MOV #%TDPAD,SP.FLG(R1)	; AFTER RS.CNT, WILL CONTINUE AT CLRTKP FOR PADDING
+1$:	JCALL TEKPUT
+
+.SBTTL Imlac Display Routines
+
+; Eventually the IMLAC will be connected via a DMA interface.
+; For now, just define some dummy routines
+
+ASCIML:	JCALL IMLPUT
+
+CTLIML:	JCALL IMLPUT		; JUST PASS ON FOR NOW
+
+.SBTTL Ann Arbor Display Routines
+
+; ASCII character handler
+
+ASCAAD:	ADD #%AACWD,XPOS(R1)
+
+	CMP #<AADWID-1>,COL(R1)	; CHECK FOR TYPEOUT IN LAST COLUMN
+	 BEQ 1$
+	JCALL AADPUT		; JUST CONTINUE IF NOT THERE
+
+1$:	MOV RS.PTR(R1),R4	; MUST REPOSITION THE CURSOR
+	MOV R0,(R4)+		; USE THE STRING BUFFER
+	MOV #1,RS.CNT(R1)
+	JCALL ACPAA1		; CALL THE CURSOR POS ROUTINE
+
+; Control Character handler (should be haired up??)
+
+CTLAAD: JCALL AADPUT		; ANY REASON NOT TO JUST SEND THEM OUT?
+
+; %TD code routines
+
+CLRAAD:	MOV #CTL.L,R0
+	JCALL AADPUT
+
+EOLAAD:	MOV #AADWID,R0
+	SUB COL(R1),R0		; COMPUTE THE NUMBER OF SPACES TO CLEAR
+
+AADRSP:	BIS #%AARPT,R0		; REPEAT WITH N SPACES
+	MOV <AADBIT-AAD1>(R3),R4	; ADD IN SELECTOR BITS
+	ASL R4
+	ASL R4
+	ASL R4
+	BIS R4,R0
+	MOV RS.PTR(R1),R4
+	MOV R0,(R4)+
+	MOV #1,RS.CNT(R1)
+	BR ACPAA1
+
+PADAAD:	JCALL RCKBUF
+
+EOFAAD:	TST ROW(R1)		; CLEAR TO END OF SCREEN
+	 BNE 1$
+	TST COL(R1)
+	 BNE 1$
+	BR CLRAAD		; SPECIAL CASE
+
+1$:	MOV #AADWID,R0
+	SUB COL(R1),R0		; GET THE NUMBER OF SPACES LEFT ON THIS LINE
+
+	PUSH R5
+	MOV #AADHGT,R5
+	SUB ROW(R1),R5		; GET THE NUMBER OF ROWS LEFT
+
+2$:	DEC R5			; COMPUTE THE SPACES NEEDED TO CLEAR THE ROWS
+	 BEQ 3$
+	ADD #AADWID,R0
+	BR 2$
+
+3$:	POP R5
+	BR AADRSP
+
+DLFAAD:	MOV RS.PTR(R1),R4
+	MOV #SPACE,(R4)+
+	MOV #1,RS.CNT(R1)
+	BR ACPAA1
+
+ACPAAD:	MOV RS.PTR(R1),R4
+	CLR RS.CNT(R1)
+ACPAA1:	PUSH R5
+	MOV #%AAPOS,(R4)+		; PUT THE CURSOR POS COMMAND CODE
+	MOV COL(R1),R0			; FORMAT THE COLUMN
+	CLR R5
+1$:	SUB #10.,R0			; DIVIDE BY 10 (DAMN BCD FORMAT!!)
+	BLT 2$
+	INC R5
+	BR 1$
+2$:	ADD #10.,R0			; R0 HAS REMAINDER, R5 THE QUOTIENT
+	.REPT 4				; SHIFT LEFT 4 BITS TO GET BCD
+	ASL R5
+	.ENDR
+	ADD R5,R0
+	MOV R0,(R4)+
+	MOV ROW(R1),R0			; FORMAT THE ROW
+	BIS #INTARM,R0
+	MOV R0,(R4)+
+	ADD #3,RS.CNT(R1)
+	POP R5
+	JCALL RTSTRH
+
+
+GLVAAD:	TST ARDSX(R1)
+	BNE 2$
+	TST ARDSY(R1)
+	BNE 2$
+99$:	MOV #%AAGWD,DIVOR
+	MOV XPOS(R1),DIVEE
+	CALL DIVIDE		; RETURNS QUOTIENT IN R0
+	ADD #8,R0		; OFFSET
+	MOV R0,COL(R1)
+	MOV #%AAGHT,DIVOR
+	MOV YPOS(R1),DIVEE
+	CALL DIVIDE
+	TST R0
+	BEQ 1$
+	 NEG R0
+1$:	ADD #<AADHGT-1>,R0
+	BGE 10$
+	CLR R0
+10$:	MOV R0,ROW(R1)
+	MOV RS.PTR(R1),R4
+	MOV #%AAGCH,(R4)+
+	MOV #1,RS.CNT(R1)
+	JCALL ACPAA1
+
+2$:	BR 99$			; just plot end points for now(easy)
+
+MPXBEL:	MOV KBD(R1),R0	; BELL MULTIPLEXOR
+	JCALL BELPUT
+
+.SBTTL Grinnell TV Display Routines
+
+ASCGTV:	BIC #MASCII,R0		; CLEAR LH AND 200 BIT
+	CALL GTVGXY
+	CMP #GTVWID,COL(R1)	; CHECK FOR WRAPAROUND HACK (IGNORE CHAR IF IN LAST COL)
+	BGT 1$
+	BEQ 10$
+	MOV #-1, COL(R1)	; DO WRAPAROUND (POSITION TO NEXT LINE) WHEN
+	INC ROW(R1)		; CONTINUED
+10$:	INC COL(R1)
+	PUSH #ACPGTV		; CONTINUE AFTER GTVPUT
+	PUSH #<%TVLLB+%TVCHT-%TVDCN+%TBLWI>
+	PUSH #%TVLEB
+	INC R4			; MOVE OVER THE INTERCHAR SPACE
+	DEC R5			; MOVE DOWN ONE RASTER LINE
+	MOV <GTVBGD-GTV1>(R3),R0
+	BIC #%TBWVG,R0		; RECTANGLE GRAPHICS
+	PUSH R0
+	MOV #3,R0
+	JCALL GTVPUT
+
+1$:	PUSH #UCPGTV		; CONTINUE AT UPDATE CURSOR POS
+	CMP #47,R0
+	BNE 2$
+	 CLR R0			; TRANSLATE QUOTE INTO NULL
+2$:	MOVB BSLTAB(R0),R2	; GET BASELINE FOR THIS CHAR (SIGN EXTENDED)
+	ADD R2,R5		; ADD INTO Y POS
+	BIS #%TVWAC,R0		; MAKE IT A WRITE ASCII CHAR COMMAND
+	PUSH R0			; SET UP ARGS FOR GTVPUT
+	MOV #1,R0		; AND COUNT OF ARGS.
+	JCALL GTVPUT
+
+	BEGTAB
+BSLTAB:	.rept 200
+	.byte 0			; zero out all bytes to start with
+	.endr
+	;g, p, q, y, ,, ; are dropped two scan lines.
+	.IRP X,<147, 160, 161, 171, 54, 73, 137>
+	.=BSLTAB+X
+	.BYTE -2
+	.ENDM
+	
+	;beta, :, j are dropped one scan line.
+	.IRP X,<3,72,152>
+	.=BSLTAB+X
+	.BYTE -1
+	.ENDM
+
+.=BSLTAB+200
+	ENDTAB
+
+UCPGTV:	ADD #<%TVCWD*2>,XPOS(R1)
+	RET
+
+CTLGTV:	CMP #CR,R0		; hack CR, LF
+	BNE 1$
+	CLR COL(R1)
+	BR ACPGTV
+1$:	CMP #LF,R0
+	BNE 2$
+	INC ROW(R1)
+	BR ACPGTV
+2$:	INC COL(R1)
+	BR ASCGTV
+
+ACPGTV:	CALL RASTCP		; GET RASTER COORDS IN XPOS AND YPOS
+	JCALL RCKBUF		; RETURN
+
+DLFGTV:	CALL GTVGXY
+	PUSH #<%TVLEB+%TVCWD+%TBLWI>
+	BR ERSGT1
+
+EOLGTV:	CALL GTVGXY
+	MOV R4,R0
+	NEG R0
+	ADD #%TVMAX,R0
+	BIS #<%TVLEB+%TBLWI>,R0	; LOAD EB COMMAND (last) ON THE STACK 
+	PUSH R0
+
+ERSGT1:	SUB #%TVDCN,R5 ; MOVE DOWN TO CLEAR THE DECENDER LINES
+	PUSH #<%TVLLB+%TVCHT>	; ERASE ONE CHARACTER LINE HIGH
+
+ERSGTV:	MOV <GTVBGD-GTV1>(R3),R2
+	XOR <#%TBWBG>,R2
+	BIC #%TBWVG,R2		; RECTANGLE GRAPHICS
+	PUSH R2			; SET WRITE MODE TO OPPOSITE BACKGROUND
+	MOV #3,R0
+	JCALL GTVPUT
+
+EOFGTV:	CALL GTVGXY
+	MOV #%TDEOL,SP.FLG(R1)	; CONTINUE WITH EOLGTV NEXT TIME
+	SUB #<%TVDCN+1>,R5
+	BIS #<%TVLLB+%TBLWI>,R5	; CLEAR TO BOTTOM OF THE SCREEN
+	PUSH R5
+	PUSH #<%TVLEB+%TVMAX>	; CLEAR TO RIGHT EDGE
+	CLR R4
+	CLR R5
+	MOV #3,R0
+	BR ERSGTV
+
+CLRGTV:	MOV <GTVBGD-GTV1>(R3),<GTVLWM-GTV1>(R3)	;RESET BACKGROUND
+	CALL RASTCP
+	CALL GTVGXY
+	PUSH #%TVERS
+	MOV #1,R0
+	JCALL GTVPUT
+
+PADGTV:	CALL GTVGXY
+	PUSH #%TVNOP
+	MOV #1,R0
+	JCALL GTVPUT
+
+; GRINNELL TV GRAPHICS
+
+GLVGTV:	MASK 7			; MASK THE CLOCK OFF
+	CMP #%TVBOF,<GTVBCN-GTV1>(R3)	; IF CURSOR IS CURRENTLY ON
+	BGT 1$
+	 CLR <GTVBCN-GTV1>(R3)	; FORCE AN ERASE
+	 TVPUSH R3
+1$:	UNMASK
+	ASR R0
+	CALL GTVGXY
+	SUB R4,R0
+	BIC #177000,R0
+	BIS #<%TVLEB+%TBLWI>,R0
+	PUSH R0
+	ASR R2
+	SUB R5,R2
+	BIC #177000,R2
+	BIS #%TVLLB,R2
+	PUSH R2
+	MOV #2,R0
+	JCALL GTVPUT
+
+; Convert Character cursor position to raster position
+
+RASTCP:	MOV COL(R1),R0
+	ASL  R0			; MULTIPLY BY 6 FOR NOW (NOT GENERAL)
+	ASL  R0
+	ADD COL(R1),R0
+	ADD COL(R1),R0
+	MOV ROW(R1),R2
+	ASL R2
+	ASL R2
+	ASL R2			; THEN BY 8 AND ADD 2 TO GET 10/
+	ADD ROW(R1),R2
+	ADD ROW(R1),R2
+	NEG R2
+	ADD #<%TVMAX-%TVCHT>,R2		; CONVERT TO RASTER COORDS
+	MASK 7			; MASK OUT CLOCK INTERRUPTS
+	MOV R0,XPOS(R1)
+	MOV R2,YPOS(R1)
+	ASL XPOS(R1)		; THESE MUST ALWAYS BE 1024 X 1024
+	ASL YPOS(R1)
+	UNMASK
+	RET
+
+GTVGXY:	MOV XPOS(R1),R4		; GET XPOS AND YPOS IN RASTER UNITS IN R4,R5
+	ASR R4
+	MOV YPOS(R1),R5
+	ASR R5
+	RET
+
+.SBTTL Grinnell TV Cursor Drawing
+
+; TIMED CURSOR UPDATE ROUTINE
+
+;; The cursor timer has a cycle starting with %TVCTM*%TVCOF ticks of the
+;; cursor turned-off followed by %TVCTM*(%TVBMX-%TVCOF) ticks of the cursor
+;; on.  The cursor is not re-erased during the off time, but it is erased
+;; and rewritten during the on time.  Cursor drawing is activated by pushing
+;; some cursor commands on the cursor stack which is checked by the interrupt
+;; level routine.  The items on the cursor stack have a channel number in
+;; the right byte and 0 (erase) or 377 (write) in the left byte.
+
+GTVCTM:	PUSH <#%TVCTM,#GTVCTM>	; CALLED WITH CHANNEL NUMBER IN R0
+	CALL CQADD		; RE- QUEUE THE CURSOR UPDATE USING R0
+	INC <GTVBCN-GTV1>(R0)	; STEP THE BLINK COUNT
+	CMP #%TVBMX,<GTVBCN-GTV1>(R0)	; AT THE END OF THE CURSOR CYCLE?
+	BGE 1$			; STILL IN THE BLINK CYCLE
+	 CLR <GTVBCN-GTV1>(R0)	; CYCLE AROUND
+	 BR 3$			; CONTINUE BY PUSHING AN ERASE COMMAND
+1$:	CMP #%TVBOF,<GTVBCN-GTV1>(R0)	; SEE WHERE WE ARE IN THE BLINK CYCLE
+	BLT 2$			; IN THE ON PART OF THE CYCLE STILL
+	 PUSH CHNL(R0)		; CHECK ON M.P. ACTIVITIES.
+	 ADD #RI.CON,(SP)
+	 TST @(SP)+		; SEE IF IN THE MIDDLE OF GRAPHICS OR CPOSING
+	 BEQ 99$		; NO.  CURSOR STILL OFF, SO JUST RETURN
+	  CLR <GTVBCN-GTV1>(R0)	; BACKSTEP THE COUNT, THUS EXTENDING THE OFF CYCLE
+	  BR 99$
+2$:	BIS #177400,R0		; PUSH A WRITE COMMAND ON THE CURSOR STACK
+	TVPUSH R0
+	BIC #177400,R0		; CONVERT BACK TO AN ERASE COMMAND
+
+3$:	TVPUSH R0
+	BIT #INTARM,GTVTST	; CHECK TO SEE IF INTERRUPTS NEED ACTIVATING
+	BNE 99$
+	 MOV #%TVNOP,GTVTBF
+	 BIS #INTARM,GTVTST
+99$:	RET
+
+; TV CURSOR HACKING ROUTINE CALLED AT INTERRUPT LEVEL BY GTVINT
+
+TVCDO:	PUSH <R0,R1,R2,R3>
+	MASK 7			; LOCK OUT THE CLOCK
+	TVPOP R3
+	UNMASK
+	PUSH R3
+	BIC #177740,R3
+	MOV <GTVBGD-GTV1>(R3),R2 ; GET THE DEFAULT LWM COMMAND
+	TST (SP)+		; TEST FOR ERASE OR WRITE
+	BLT 1$			; WRITING, SO SKIP
+	 XOR <#%TBWBG>,R2	; COMPLEMENT WRITE MODE FOR ERASING
+	 MOV <GTVOCX-GTV1>(R3),R0
+	 MOV <GTVOCY-GTV1>(R3),R1
+	 BR 2$
+1$:	MOV CHNL(R3),R1		; GET CHANNEL TABLE POINTER
+	MOV XPOS(R1),R0		; GET CURSOR H POS
+	MOV YPOS(R1),R1		; GET CURSOR V POS
+	ASR R0			; CONVERT TO RASTERS
+	ASR R1
+	MOV R0,<GTVOCX-GTV1>(R3)
+	MOV R1,<GTVOCY-GTV1>(R3)
+2$:	MOV <GTVLDC-GTV1>(R3),GTVTBF	; SELECT TV CHANNEL
+	MOV R2,GTVTBF		; CHANGE THE WRITE MODE
+	CALL @<GTVCUR-GTV1>(R3)	; GO DRAW A CURSOR
+	MOV #%TVNOP,GTVTBF	; PADDING
+	MOV #%TVNOP,GTVTBF	; PADDING
+	POP <R3,R2,R1,R0>
+	RET
+
+; CURSOR DRAWING ROUTINES ASSUME R0,R1 ARE THE POSITION AT WHICH 
+; TO DRAW THE CURSOR.
+
+; DRAW A VERTICAL LINE CURSOR
+LINCUR:	BIS #%TVLEA,R0
+	SUB #1,R1		;Center cursor in line.
+	BIS #%TVLLA,R1
+	MOV R0,GTVTBF		; Load new ea (assume b still loaded correctly)
+	MOV R1,GTVTBF		; Load new la and write (eb, lb the same)
+	MOV #%TVLEB,GTVTBF	; Load eb with 0.
+	BIS #<%TVLLB+%TVCHT-1+%TBLWI>,GTVTBF	; Write or erase cursor
+	RET
+
+.SBTTL Device Output Buffer Data Deposit Routines
+
+; DISPATCH TABLE FOR PUT ROUTINES
+RTYPUT:	ERROR			; GOULD - SHOULD NEVER GET HERE
+	TEKPUT			; TEKTRONIX
+	IMLPUT			; IMLAC
+	AADPUT			; ANN ARBOR
+	ERROR			; GRINNELL TV (CAN'T CALL IT THIS WAY!)
+	DEVPUT			; DATA DEVICE FROB
+
+; PUT ROUTINE FOR DL-11 INTERFACES (TEKTRONIX).  NOTE THAT ENABLING
+; INTERRUPTS IS SUFFICIENT TO GET INTERRUPT LEVEL STARTED ON DL-11'S
+; (UNLIKE DR-11M).
+
+TEKPUT:	MOV DEVICE(R1),R4	; GET POINT TO OUTPUT DEV TABLE
+	MOV OD.PTR(R4),R2
+	BIC #200,R0
+	MOVB R0,(R2)+		; PUT THE CHAR INTO THE RECEIVE OUTPUT BUFFER
+	CMP R2,OD.END(R4)	; ARE WE AT THE END OF THE BUFFER?
+	BNE 2$
+	 MOV OD.BEG(R4),R2	; CIRCLE AROUND TO BEGINNING THEN
+2$:	CMP R2,OD.LIM(R4)
+	BNE 3$
+	 INC OD.BLK(R4)		; BLOCK QUEUE
+3$:	MASK 4
+	MOV R2,OD.PTR(R4)	; UPDATE POINTER
+	CALL RCKBUF
+	TST OD.SLP(R4)
+	BNE 4$			; IF SLEEPING, LET THE ALARM WAKE IT UP!
+	 BIS #INTARM,@OD.STA(R4)	; ACTIVATE INTERRUPT FOR OUTPUT TO DEVICE
+4$:	UNMASK			; INTERRUPTS CAN HAPPEN NOW.
+	RET
+
+IMLPUT:	RET			; NOT IMPLEMENTED YET
+
+AADPUT:	BIT #%AARPT,R0		; IF A REPEAT COMMAND, SKIP THE BITS
+	BNE BELPUT
+	 BIS <AADBIT-AAD1>(R3),R0
+
+BELPUT:	MOV AADTAB+OD.PTR,R2
+	MOV R0,(R2)+
+
+	CMP AADTAB+OD.END,R2	; ARE WE AT THE END OF THE BUFFER?
+	BNE 1$
+	 MOV AADTAB+OD.BEG,R2	; CIRCLE AROUND TO BEGINNING THEN
+1$:	CMP AADTAB+OD.LIM,R2
+	BNE 2$
+	 INC AADTAB+OD.BLK		; BLOCK QUEUE
+2$:	CALL RCKBUF
+	MASK 4
+	MOV R2,AADTAB+OD.PTR
+	BIT #INTARM,AADTST
+	 BEQ AADARM
+	UNMASK
+	RET
+
+AADARM:	BIS #INTARM,AADTST
+	CALL AADINT		; FOR THE DR-11M WE MUST START INTERRUPTS BY
+	RET			; AADINT RETURNS WITH RTI, POPPING THE MASK 4
+
+; KLUDGEROUS CONVENTIONS FOR THE GRINNELL TV'S:
+; THEN THE GTVPUT ROUTINE WILL ALWAYS PUT OUT
+; A CHANNEL SELECT COMMAND FOLLOWED BY COMMANDS TO LOAD THE
+; EA AND LA REGISTERS FROM INPUT ARGUMENTS IN R4 AND R5 (X, Y).
+; GTVPUT IS CALLED WITH UP TO 3 MORE WORDS TO BE PUT OUT,
+; PUSHED ON THE PDL AND R0 HOLDS THE COUNT.  A TOTAL OF
+; 6 WORDS MUST BE PUT OUT, SO IF LESS THAN 3 WORDS ARE GIVEN
+; PADDING IS PUT OUT.  IT IS ASSUMED THAT ALL COMMANDS TAKE
+; NO TIME EXCEPT THE LAST ONE (I.E. ALL BUT THE LAST ARE REGISTER
+; LOADING COMMANDS).  THUS ANY REQUIRED PADDING IS PUT OUT BETWEEN
+; THE LOAD EA, LA COMMANDS AND THE COMMANDS PROVIDED ON THE PDL.
+; WRITE MODE IS INITIALIZED AT INTERRUPT LEVEL FOR EACH BLOCK OF COMMANDS.
+
+GTVPUT:	MOV GTVTAB+OD.PTR,R2	; BUFFER INPUT POINTER
+	MOV R3,(R2)+		; PUT OUT CHANNEL #
+	BIS #%TVLEA,R4
+	MOV R4,(R2)+
+	BIS #%TVLLA,R5
+	MOV R5,(R2)+
+	MOV R0,R4		; MOVE COUNT OF COMMANDS PUSHED INTO R4
+	SUB #3,R4		; NEGATIVE COUNT OF PADDING NEEDED
+	 BGE 3$			; SKIP PADDING IF NONE NEEDED
+
+	PUSH R0			; SAVE R0
+	MOV #%TVNOP,R0
+2$:	MOV R0,(R2)+		; LOOP PUTTING OUT NOOP'S
+	INC R4
+	 BLT 2$
+	POP R0
+
+3$:	TST R0			; SKIP DATA IF NONE (DOES THIS EVER HAPPEN?)
+	 BEQ 5$
+
+4$:	POP (R2)+
+	DEC R0
+	 BGT 4$			; STACK IS HOPEFULLY RESTORED WHEN THIS FALLS THRU
+
+5$:	CMP GTVTAB+OD.END,R2	; CHECK FOR WRAPAROUND OF BUFFER POINTER
+	 BNE 6$
+	MOV GTVTAB+OD.BEG,R2
+
+6$:	CMP GTVTAB+OD.LIM,R2	; CHECK FOR BUFFER FULL CONDITION
+	 BNE 7$
+	INC GTVTAB+OD.BLK
+
+7$:	CALL RCKBUF
+	MASK 4
+	MOV R2,GTVTAB+OD.PTR	; STORE BUFFER POINTER
+	BIT #INTARM,GTVTST	; INTERRUPT LEVEL ACTIVE?
+	 BEQ GTVARM		; NO, ACTIVATE IT
+	UNMASK
+	RET
+
+GTVARM:	BIS #INTARM,GTVTST	; FOR THE DR-11M WE MUST START INTERRUPTS BY
+	CALL GTVINT		; ACTUALLY OUTPUTING SOMETHING
+	RET			; GTVINT RETURNS WITH AN RTI POPPING THE MASK 4
+
+DEVPUT:	RET			; NOT IMPLEMENTED YET
+
+; SEE IF MORE CHARS ARE WAITING TO BE PROCESSED.  IF NOT, FIX UP
+; THE BR TABLE.  NOTE, WE MASK 4 HERE BECAUSE OTHER ROUTINES (BELOW)
+; USE RCKBUF TO RETURN FROM TTYOMP, EVEN THO WE MUST MASK 4 IN THE
+; PUT ROUTINES ABOVE.
+
+RCKBUF:	MASK 4			; DONT ALLOW TRANSMIT INTERRUPTS NOW
+	TST RS.CNT(R1)
+	 BNE 1$			; MORE CHARS LEFT IN THE STRING BUFFER.
+	TST SP.FLG(R1)		; A SPECIAL CODE PENDING?
+	 BNE 1$
+	CMP RI.LIM(R1),RI.PTR(R1)
+	 BNE 1$			; STILL HAVE CHARS WAITING TO BE PROCESSED
+	MOV BTABRL(R3),@RI.FLG(R1)	; NO CHARS PENDING PATCH UP BRANCH INSTRUCTION
+	MOV #WAIT,WAITPL	; PATCH WAIT INSTRUCTION
+1$:	UNMASK
+	RET
+
+.SBTTL Main Program Channel Processing - Local -> Remote Device
+
+MPCPLR:	MOV CHNL(R3),R1
+	MOV TCTYP(R1),R5
+	TST @TO.BLK(R1)		; IS OUTPUT BLOCKED
+	 BEQ 1$
+	SKPRET
+1$:	TST TS.CNT(R1)
+	 BEQ TCHGET
+
+; TEMPORARY STRING HANDLER
+TTSTRH:	MOV @TS.PTR(R1),R0
+	DEC TS.CNT(R1)
+	 BNE 1$
+	MOV TS.TBF(R1),TS.PTR(R1)
+	BR TCHPUT
+1$:	INCW TS.PTR(R1)
+	BR TCHPUT
+
+TCHGET:	MOV TI.LIM(R1),R2
+	MOV (R2)+,R0
+	CMP R2,TI.END(R1)
+	 BNE 1$
+	MOV TI.BEG(R1),R2
+1$:	MASK 4
+	MOV R2,TI.LIM(R1)
+	CLR TI.BLK(R1)
+	UNMASK
+
+	TST TI.CON(R1)
+	BEQ 10$
+	 JCALL @TI.CON(R1)
+10$:	BIT #%SPKEY,R0		; CHECK FOR SPECIAL CODES (> 177)
+	 BEQ 2$
+	MOV R0,R2
+	BIC #MASK37,R2		; GET THE ESSENTIAL BITS
+	ASL R2
+	JCALL @SKEYTB(R2)		; GO DO SOMETHING SPECIAL
+
+2$:	CMP R0,#CTL.BSL		; CNTL BACKSLASH?
+	 BNE TCHDO
+	MOV TS.PTR(R1),R2
+	MOV R0,(R2)+		; QUOTE IT
+	MOV R0,(R2)+
+	MOV #2,TS.CNT(R1)
+	BR TTSTRH
+
+TCHDO:	MOV R0,R2
+	SWAB R2
+	BIC #%SBITS,R2		; ANY META, CNTL, TOP, ETC. STUFF?
+	 BEQ TCHPUT		; NO
+	BIS #100,R2
+	PUSH R2
+	BIC #MASCII,R0
+	BIT #%SHLOK,R2		; SHIFT LOCK HACKERY
+	 BEQ 4$
+	BIT #100,R0		; TEST FOR ALPHABETIC CHARS
+	 BEQ 4$
+	MOV R0,R2
+	BIC #MASK37,R2
+	 BEQ 4$
+	CMP #33,R2
+	 BLE 4$
+	MOV #40,R2
+	BIC R2,R0		; CLEAR THE 40 BIT
+	
+4$:	MOV TS.PTR(R1),R2	; CHARACTER ESCAPE SEQUENCE
+	MOV #CTL.BSL,(R2)+
+	MOV (SP)+,(R2)+		; POP special bits
+	MOV R0,(R2)+
+	MOV #3,TS.CNT(R1)
+	BR TTSTRH
+
+TCHPUT:	MOV CHNLN(R1),-(SP)	; (CHARACTER,,LINE SELECT)
+	BIS #200,(SP)		; CONVERT CHNL # INTO LINE SELECT
+	BIC #%SPKEY,R0		; DONT SEND 8 BIT CHARS!!
+	MOVB R0,1(SP)
+	MOV @TO.PTR(R1),R2
+	MOV (SP)+,(R2)+
+	CMP R2,@TO.END(R1)
+	 BNE 1$
+	MOV @TO.BEG(R1),R2
+
+1$:	MASK 6			; INTERRUPT SENSITIVE
+	CMP R2,@TO.LIM(R1)	; SEE IF OUTPUT IS NOW BLOCKED
+	 BNE 2$
+	INC @TO.BLK(R1)		; YES, SO SET INDICATOR
+2$:	MOV R2,@TO.PTR(R1)	; UPDATE THE OUTPUT POINTER NOW
+	CALL TCKBUF
+	BIS #INTARM,NETTST		; ENABLE INTERRUPTS
+	UNMASK
+	RET
+
+; UNFORTUNATELY WE HAVE TO MASK TWICE
+
+TCKBUF:	MASK 6			; INTERRUPT SENSITIVE CODE
+	TST TS.CNT(R1)
+	 BNE 1$
+	CMP TI.LIM(R1),TI.PTR(R1)
+	 BNE 1$			; THERE ARE MORE INPUT CHARS BUFFERED.
+	MOV BTABLR(R3),@TI.FLG(R1)	; NOTHING LEFT TO DO.
+	MOV #WAIT,WAITPL
+1$:	CLR TI.BLK(R1)
+	UNMASK
+	RET
+
+	BEGTAB			; BEGIN ENTRIES IN TABLE SPACE
+
+SKEYTB:	NONAS1			; %KYKIL ILLEGAL
+	KBRK			; %KYBRK BREAK
+	KESC			; %KYESC ESCAPE
+	KCALL			; %KYCAL CALL
+	KCLEAR			; %KYCLR CLEAR
+	KDEL			; %KYDEL CAP DELTA
+	KCIRM			; %KYCM  CIRCLE MINUS
+	KGRAD			; %KYGRD GRAD
+	KCIRP			; %KYCP  CIRCLE PLUS
+	KBACK			; %KYBCK BACK
+	KNEXT			; %KYNXT NEXT
+	KHELP			; %KYHLP HELP
+	KFORM			; %KYFRM FORM
+	KBS			; %KYBS  BACK SPACE
+	KVT			; %KYVT  VERTICAL TAB
+	KCR			; %KYCR  CARRIAGE RETURN
+	KLINE			; %KYLF  LINE FEED
+	FDELT			; %KYRUB DELETE FORWARD
+	KRPT			; %KYRPT KEY REPEAT
+	KTAB			; %KYTAB TAB
+	KSPACE			; %KYSPC SPACE
+	ITYCAL			; %ITCAL INCREMENT TTY ALLOCATION (NOT KEY)
+	INTYCA			; %INTCA INITIALIZE TTY ALLOCATION
+	RPTYCP			; %RTYCP REPORT TTY CURSOR POSITION
+	.REPT 37-<<.-SKEYTB>/2>	; FILL OUT THE TABLE UP TO 37 ENTRIES
+	KNOOP
+	.ENDR
+
+	ENDTAB			; END ENTRIES IN TABLE SPACE
+
+.SBTTL  Special Key Handlers
+
+NONAS1:	BR KNOOP		; IGNORE IT
+
+KBRK:	MOVB #'B,R2
+	BR KWIERD
+
+KESC:	BIT #<%TXMTA+%TXCTL+%TXSHT>_1,R0
+	BEQ 1$
+	 MOVB #'A,R2
+	 BR KWIERD
+1$:	MOV #KESC1,TI.CON(R1)	; just wait for another character
+	BR KNOOP
+
+; A miriad of special hacks, and then a dispatch
+
+KESC1:	CLR TI.CON(R1)
+	CMP #%TCTEK,R5		; REVIVE HACK FOR THE TEKTRONIX
+	BNE 1$
+	 CMPB #SPACE,R0
+	 BNE 1$ 
+	 TST SP.FLG(R1)		; TEST FOR PENDING SP CODES
+	 BNE 1$			; BUSY, SO PUNT
+	 MOV #1,PADCNT(R1)	; JUST A PLACE TO STORE THE PAD COUNT
+	 MOV #%TDPAD,SP.FLG(R1)	; HACK, CAUSES TRANSMIT SIDE TO CURSORPOS
+	 CLRB @RI.FLG(R1)	; ACTIVATE M.P. ROUTINE
+	 MOV #NOP,WAITPL		; MAKE SURE WE'RE NOT WAITING
+	 BR KNOOP
+1$:	CMPB #%KYCLR,R0
+	BNE 2$
+	 CALL LABINI
+	 BR KNOOP
+2$:	CMPB #%KYESC,R0
+	BNE 3$
+	 MOVB #'A,R2
+	 BR KWIERD
+3$:	CMPB #%KYFRM,R0
+	BNE 4$
+	 MOV #%TDCLR,SP.FLG(R1)	; META CLEAR DOES INTERNAL CLEAR
+	 MOV TS.PTR(R1),R2	;SEND ^_L
+	 MOV #CTL.US,(R2)+
+	 MOV #'L,(R2)+
+	 MOV #2,TS.CNT(R1)
+ 	 JCALL TTSTRH
+4$:	MOV R0,R2
+	BIC #MASK37,R2
+	ASL R2
+	JCALL @ESCTAB(R2)
+
+
+KCALL:	MOVB #32,R2
+	BR KWIERD
+
+KCLEAR:	MOVB #'C,R2
+	BR KWIERD
+
+KDEL:	MOVB #'F,R2
+	BR KWIERD
+
+KCIRM:	MOVB #'D,R2
+	BR KWIERD
+
+KGRAD:	MOVB #'G,R2
+	BR KWIERD
+
+KCIRP:	MOVB #'E,R2
+	BR KWIERD
+
+KHELP:	MOVB #'H,R2
+	BR KWIERD
+
+KBACK:
+KNEXT:	MOVB #CTL.US,R2
+
+KWIERD:	BIC #377,R0
+	BIS R2,R0
+	BIS #%TXTOP_1,R0
+	JCALL TCHDO
+
+KFORM:		; WHAT SHOULD THESE DO???
+KBS:
+KVT:
+KCR:
+KLINE:
+FDELT:
+KRPT:
+KTAB:
+KSPACE:
+KNOOP:	JCALL TCKBUF
+
+
+; ESCAPE CODES DISPATCH TABLE
+
+	BEGTAB
+ESCTAB:	INITTY
+	KNOOP
+	KNOOP
+	KBKGND			; C - TOGGLE BACKGROUND ON TV'S
+	.REPT 20
+	KNOOP
+	.ENDR
+	KGRTST
+	.REPT 13
+	KNOOP
+	.ENDR
+	ENDTAB
+
+; toggle background
+KBKGND:	CMP #%TCGTV,R5
+	BNE KNOOP
+	XOR <#%TBWBG>,<<GTVBGD-GTV1>(R3)>
+	XOR <#%TBWBG+%TBWOR>,<<GTVLWM-GTV1>(R3)>
+	BR KNOOP
+
+KGRTST:	MOV #KGRTS1,TI.CON(R1)
+	BR KNOOP
+
+KGRTS1:	CLR TI.CON(R1)
+	BIC #177774,R0
+	ASL R0
+	JCALL @GRTTAB(R0)
+
+GRTTAB:	GRTEST
+	GRTST1
+	GRTST2
+	GRTST3
+
+GRTEST:	MOV #%GRTST,R0
+	BR GRTSTP
+GRTST1:	MOV #%GRTS1,R0
+	BR GRTSTP
+GRTST2:	MOV #%GRTS2,R0
+	BR GRTSTP
+GRTST3:	MOV #%GRTS3,R0
+	BR GRTSTP
+GRTST4:	MOV #%GRTS4,R0
+GRTSTP:	MASK 7
+	BIC #INTARM,GTVTST
+	MOV R0,GTVTBF
+	UNMASK
+	BR KNOOP
+
+.SBTTL TTY Character Allocation and Output Reset Routines
+
+; ALL THESE ROUTINES MUST COME HERE VIA THE SKEYTAB DISPATCH
+; SO THAT WE CAN BE SURE THAT ALLOCATION MESSAGES DO NOT
+; GET MIXED WITH META KEY STRINGS.
+
+; INCREMENT TTY CHARACTER ALLOCATION
+
+ITYCAL:	PUSH #TTSTRH		; PUSH CONTINUATION ADDRESS
+	MOV TS.PTR(R1),R2
+
+INCALC:	MOV #CTL.BSL,(R2)+	; ^\
+	MOV #CTL.A,(R2)+	; ^A
+	MOV #ALCINC,(R2)+		; ALLOCATION
+	ADD #3,TS.CNT(R1)
+	RET
+
+; INITIALIZE TTY CHARACTER ALLOCATION
+
+INTYCA:	PUSH #TTSTRH		; PUSH CONTINUATION ADDRESS
+	MOV TS.PTR(R1),R2
+	MOV #2,TS.CNT(R1)
+	ADD #<2*ALCINC>,ALNUM(R1)
+	MOV #CTL.BSL,(R2)+	; ^\
+	MOV #CTL.Z,(R2)+	; ^Z ZERO THE ALLOCATION
+	CALL TTYCP		; THEN UPDATE THE CURSOR POS
+	CALL INCALC
+	BR INCALC
+
+; REPORT TTY CURSOR POSITION (NORMALLY IN RESPONSE TO OUTPUT RESET).
+
+RPTYCP:	PUSH #TTSTRH		; PUSH CONTINUATION  ADDRESS
+	MOV TS.PTR(R1),R2
+
+TTYCP:	MOV #CTL.BSL,(R2)+	; ^\
+	MOV #CTL.P,(R2)+	; ^P  (CURSOR POS UPDATE)
+	MOV ROW(R1),(R2)+
+	MOV COL(R1),(R2)+
+	ADD #4,TS.CNT(R1)
+	RET
+
+; PUT AN ALLOCATION COMMAND IN THE CURRENT CHANNEL'S INPUT BUFFER.
+; COMMAND IS IN R2.  R2 IS CLOBBERABLE BY ROUTINES THAT CALL ALCPUT
+; BUT R0 IS NOT.
+
+ALCPUT:	PUSH R0
+	MOV R2,R0
+	MASK 4
+	CALL INRPUT
+	UNMASK
+	POP R0
+	RET
+
+.SBTTL Gould  - Main Program Routine 
+
+GLDMP:	MOV CHNL(R3),R1
+	TST GLBLK		; OUTPUT QUEUE FILLED
+	 BNE 11$
+	TST GLERR		; IN THE MIDST OF SOME ERROR
+	 BEQ 10$
+11$:	SKPRET
+
+10$:	MOV RI.LIM(R1),R2
+	MOV GTPTR,R4		; TEMPORARY POINTER (NECESSARY SINCE ITEMS
+				; IN QUEUE HAVE "WIDTH")
+	JMP @GLDPND		; DISPATCH TO ANY PENDING OPERATIONS DUE TO GL QUEUE
+				; BLOCKAGE (DEFAULT IS CHRDEC)
+CHRDEC:	DEC ALNUM(R1)
+	BGT 1$
+	 CLR ALNUM(R1)		; FIX UP LATER
+1$:	MOVB (R2)+,R0		; PICK UP CHARACTER
+	BPL DATHAC		; SKIP AROUND IF CHARACTER IS NOT AN EIGHT BIT CODE
+	TST QOTFLG		; IS THIS CHARACTER TO BE QUOTED?
+	BEQ 2$
+	 CLR QOTFLG		; YEP, PASS IT ON
+	 BR DATACH
+2$:	CMPB R0,#%CCACK		; ARE WE BEING PAGED?
+	BNE 3$
+	 CALL INIGLD
+	 MOVB GLDCSR+1,GLDERR
+	 CALL STAGLD		; RESPOND WITH STATUS
+	 JMP GLOOP
+3$:	CMPB R0,#%CCSOD		; START OF DATA?
+	BNE 4$
+	 CLR EODFLG		; YEP, FLAG START OF DATA
+	 JMP GLOOP
+4$:	TST EODFLG		; ARE WE RECEIVING RANDOM CHARACTERS?
+	BEQ 5$
+	 JMP GLOOP		; FORGET THEM
+5$:	CMPB R0,#%CCQOT		; SHOULD WE QUOTE THE NEXT CHARACTER?
+	BNE 6$
+	 INC QOTFLG		; YEP
+	 JMP GLOOP
+6$:	CMPB R0,#%CCEOD		; END OF DATA?
+	BNE DATACH
+	INC EODFLG		; YEP, FLAG END OF DATA
+	clr gldclk
+	push <#1,#gldsmr>	;In Gldtim, smear unless have started again.
+	call cqadd
+	jmp gloop
+
+gldsmr:	mask 5
+	tst eodflg		; If a new page has started, forget this
+	bne 1$
+	 clr gldclk
+	 br 99$
+1$:	tst glidl		; If interrupt level still busy, don't count.
+	bne 2$
+	 clr gldclk		; Reset the clock and go requeue
+	 br 3$
+2$:	inc gldclk
+	cmp #gldtim,gldclk	; have we timed out?
+	bgt 3$			; not, just requeue and exit
+	 PUSH R4		; do smear protect
+	 MOV GLPTR,R4
+	 MOV #100000,(R4)+
+	 MOV SMEARP,(R4)+
+	 MOV R4,GLPTR
+	 MOV R4,GTPTR
+	 CLRB GLIBR
+	 POP R4
+	 BR 99$
+3$:	push <#1,#gldsmr>	; requeue and exit
+	call cqadd
+
+99$:	unmask
+	ret
+
+;; smskct is the smear skip count.  When the Gould starts up, it increments
+;; it, and when a smear is done it is decremented, but a smear is only done
+;; if it is 0 after decrementing.  It is thus a lock so that if a new page
+;; has started to come out, Gldsmr won't bother to put out a smear page.
+
+smskct:	.word 0
+SMEARP:	.WORD SMRBLK
+
+
+DATHAC:	TST EODFLG		; NON EIGHT BIT CODE, IS IT RANDOM DATA?
+	BEQ DATACH
+	JMP GLOOP
+
+DATACH:	JMP @WRDPTR		; MUST BE DATA THEN
+
+MAKWD1:	MOVB R0,TMPWRD		;FIRST PIECE OF WORD
+	MOV #MAKWD2,WRDPTR
+	 JMP GLOOP
+
+MAKWD2:	MOVB R0,TMPWRD+1	;SECOND PIECE OF WORD
+	MOV #MAKWD1,WRDPTR
+
+	JMP @GLDPTR		; DISPATCH TO PROPER COMMAND HANDLER
+
+DATDEC:	TST TMPWRD		; COMMAND OR LINE BUFFER?
+	 BMI COMDEC
+	 JMP DMADEC		; BIT 15 NOT SET, LINE BUFFER
+
+
+
+.SBTTL Gould - Command Processing
+;  COMMAND DECODING 
+
+
+COMDEC:	BIC #100000,TMPWRD	; REMOVE COMMAND BIT
+	MOV R4,R5
+	ADD #4,R5		; R5 POINTS TO LAST LOC IN POTENTIAL COMMAND
+
+	MASK 6
+	CMP GTPTR,GLLIM		; ARE WE AHEAD OF PICK UP POINTER ANYWAY?  (THEN OK)
+	BHIS 2$
+	CMP R5,GLLIM		; IF WE GO THROUGH WITH THIS COMMAND, WILL WE
+				; LAP OTHER POINTER?  (THEN NOT OK)
+	BLO 2$
+	INC GLBLK		; GL QUEUE IS BLOCKED, WAIT
+	UNMASK
+	MOV #COMDEC,GLDPND	; AND MAKE SURE WE WIND UP IN
+				; THE RIGHT PLACE ON RETURN
+	 JMP GLDXIT
+2$:	UNMASK
+	MOV #CHRDEC,GLDPND
+
+	BIT #40000,TMPWRD	; MACRO BIT TEST
+	 BEQ DLYTST		; NOPE, IS STANDARD OR PSEUDO COMMAND
+
+; GOULD MACRO COMMANDS
+	MOVB TMPWRD,UPWORD	; UP COMING PAGE NUMBER
+	MOVB TMPWRD+1,R0
+	BIC #177700,R0	
+	ASR R0
+	ASR R0
+	ASR R0
+	MOV UPWORD,(R4)+
+	MOV #100000,(R4)+
+	MOV MACTAB(R0),(R4)+
+	ASR R0
+	MOV R0,GRFFLG
+	CMP R0,#3
+	BNE 4$
+	CLR GRFFLG
+4$:	 JMP GLDFIN		; COMPLETION OF COMMAND
+	
+MACTAB:	.WORD SALBLK
+	.WORD SLGBLK
+	.WORD SHGBLK
+	.WORD EOFBLK
+
+UPWORD:	.WORD 120000
+
+
+; NORMAL GOULD COMMANDS
+
+;DETERMINE IF THIS IS A DELAYED COMMAND
+DLYTST:	BIT #200,TMPWRD		; LINE ADVANCE OR HOME? (OR PSEUDO COMMAND)
+	 BNE DLAYCM
+	CMPB #%GCON,TMPWRD	; ENABLE?
+	 BEQ DLAYCM
+	TSTB TMPWRD		; FEED?
+	BEQ DLAYCM
+
+;IF WE GOT TO HERE, MUST BE AN IMMEDIATE COMMAND
+	CMPB #%GCGRF,TMPWRD	; GRAPHIC SELECT?
+	 BNE 1$
+	INC GRFFLG
+1$:	CMPB #%GCOFF,TMPWRD	; DISABLE?
+	 BNE 2$
+	CLR GRFFLG		; CLEAR MODE SELECTION
+2$:	CLRB TMPWRD+1		; IMMEDIATE COMMAND SIGNIFIED BY 0 IN BYTE 1
+	MOV TMPWRD,(R4)+
+	 JMP GLDFIN		; COMPLETION OF A COMMAND
+
+DLAYCM:	BIT #100,TMPWRD
+	BEQ HERE4
+
+; REQUEST FOR REPEAT, IN ACTUALITY
+	BIT #2,TMPWRD
+	BNE 1$
+
+; START OF REPEAT
+	MOV #140000,(R4)+
+	MOV #REPTRN,GLDPTR	; WE NEED ANOTHER WORD HERE (THE REPEAT COUNT)
+	 JMP GLDXIT
+
+; END OF REPEAT
+1$:	MOV #140001,(R4)+
+	 JMP GLDFIN		; COMPLETION OF A COMMAND
+
+REPTRN:	MOV TMPWRD,(R4)+
+	MOV #DATDEC,GLDPTR
+	 JMP GLDFIN		; COMPLETION OF A COMAND
+
+
+HERE4:	MOVB #1,TMPWRD+1	; DELAYED COMMAND SIGNIFIED BY 1 IN BYTE 1
+	MOV TMPWRD,(R4)+
+	JMP GLDFIN		; COMPLETION OF A COMMAND
+
+;  DMA BUFFER DECODING 
+
+
+DMADEC:	TST GRFFLG
+	BEQ ALPHAM		; MUST BE ALPHA MODE
+
+;  GRAPHICS MODE 
+
+GRAPHM:	BIT #200,TMPWRD		; RUN LENGTH ENCODED?
+	 BEQ IMAGE
+	 JMP RUNLEN		; YEP
+
+.SBTTL Gould - Image Mode Data Handling
+
+IMAGE:	MOVB TMPWRD,DATLEN	; LENGTH OF DATA
+	MOVB TMPWRD+1,R5
+	MOV R5,MARLEN		; LENGTH OF MARGIN
+	ADD DATLEN,R5		; TOTAL SIZE OF BUFFER (IN WORDS)
+	MOV R5,MARLN1		; SAVE FOR DMA COUNT
+	ASL R5			; NOW IN BYTES
+	ADD R4,R5
+				; LOCATION OF PROPOSED BUFFER
+
+	MASK 6
+	CMP R4,GLLIM		; ARE WE AHEAD OF PICK UP POINTER ANYWAY? (THEN OK)
+	BHIS 4$
+	CMP R5,GLLIM		; IF WE GO THROUGH WITH THIS BUFFER, WILL WE
+				; LAP THE OTHER POINTER? (THEN NOT OK)
+	BLO 4$
+	INC GLBLK		; BLOCKED OUTPUT, WAIT FOR QUEUE TO EMPTY A LITTLE
+	UNMASK
+	MOV #IMAGE,GLDPND	; MAKE SURE WE COME BACK TO THE RIGHT PLACE
+	 JMP GLDXIT		; NEED MORE SPACE
+
+4$:	UNMASK
+	MOV #CHRDEC,GLDPND	; WE HAVE ENOUGH SPACE NOW
+
+	NEG MARLN1		; NEGATION OF TOTAL SIZE OF BUFFER
+	MOV MARLN1,(R4)+	; WORD COUNT HEADER FOR DMA COMMAND
+	TST MARLEN		; ZERO MARGIN?
+	BEQ 2$
+1$:	CLR (R4)+
+3$:	DEC MARLEN
+	BNE 1$
+2$:	MOV #IMTRAN,GLDPTR
+	 JMP GLDXIT		; NEED MORE WORDS (REST OF LINE BUFFER)
+
+
+IMTRAN:	MOV TMPWRD,(R4)+
+	DEC DATLEN
+	 BEQ 2$
+	 JMP GLDXIT		; IF MORE IMAGE DATA COMING (NEED MORE WORDS)
+2$:	MOV #DATDEC,GLDPTR	; DON'T NEED ANY MORE WORDS
+	 JMP GLDFIN		; COMPLETION OF COMMAND
+
+.SBTTL Gould - Alpha Mode Data Handling
+
+ALPHAM:	MOVB TMPWRD,R5
+	MOV R5,DATLEN
+	MOV R5,DATLN1
+	ASL R5
+	ADD R4,R5
+
+
+	MASK 6
+	CMP R4,GLLIM		; ARE WE AHEAD OF PICK UP POINTER ANYWAY? (OK)
+	BHIS 2$
+	CMP R5,GLLIM		; IF WE GO THROUGH WITH THIS BUFFER, WILL WE
+				; LAP OTHER POINTER? (NOT OK)
+	BLO 2$
+	INC GLBLK		; BLOCKED OUTPUT, WAIT FOR QUEUE TO EMPTY A LITTLE
+	UNMASK
+	MOV #ALPHAM,GLDPND	; MAKE SURE WE COME BACK HERE (NEED MORE SPACE)
+	 JMP GLDXIT
+2$:	UNMASK
+	MOV #CHRDEC,GLDPND	; WE'VE GOT THE SPACE NOW
+
+	NEG DATLN1
+	MOV DATLN1,(R4)+
+	MOV #ALPTRN,GLDPTR	; GOBBLE WORDS FOR BUFFER
+	 JMP GLDXIT
+
+ALPTRN:	MOV TMPWRD,(R4)+
+	DEC DATLEN
+	 BEQ 2$
+	 JMP GLDXIT		; WE NEED MORE WORDS
+2$:	MOV #DATDEC,GLDPTR
+	 JMP GLDFIN		; COMPLETION OF COMMAND
+
+
+.SBTTL Gould - Run Length Encoding Mode Data Handling
+
+RUNLEN: MOVB TMPWRD,ENCLEN
+	BIC #STRIP,ENCLEN	; WORD COUNT OF RUN LENGTH ENCODED DATA
+	MOV #RUNLN2,GLDPTR	; WE NEED ANOTHER WORD OF COMMAND
+	 JMP GLDXIT
+
+RUNLN2:	CLR COLOR
+	MOVB TMPWRD,MARLEN
+	 BPL 1$
+	INC COLOR
+	BIC #STRIP,MARLEN	; LENGTH OR MARGIN (IN WORDS)
+1$:	MOVB TMPWRD+1,R5
+	BIC #STRIP,R5		; LENGTH OF DECODED BUFFER, LESS MARGIN
+	ADD MARLEN,R5		; TOTAL LENGTH OF BUFFER (IN WORDS)
+	MOV R5,DATLEN
+	ASL R5			; NOW IN BYTES
+	ADD R4,R5
+
+	MASK 6
+	CMP R4,GLLIM		; ARE WE AHEAD OF PICK UP POINTER ANYWAY? (OK)
+	BHIS 2$
+	CMP R5,GLLIM		; IF WE GO THROUGH WITH THIS BUFFER, WILL WE
+				; LAP OTHER POINTER (NOT OK)
+	BLO 2$
+	INC GLBLK		; BLOCKED OUTPUT, WAIT FOR QUEUE TO EMPTY A LITTLE
+	UNMASK
+	MOV #RUNLN2,GLDPND
+	 JMP GLDXIT
+2$:	UNMASK
+	MOV #CHRDEC,GLDPND	; WE'VE GOT ENOUGH SPACE NOW
+
+	MOV #RUNTRN,GLDPTR
+	NEG DATLEN
+	MOV DATLEN,(R4)+	; WORD COUNT, DMA COMMAND HEADER
+	CLR DATLEN
+	TST MARLEN
+	BEQ 3$			; ZERO LENGTH MARGIN?
+	TST COLOR
+	BEQ 21$			; IF COLOR = 0, THEN WHITE MARGIN
+22$:	MOV #177777,(R4)+
+	DEC MARLEN
+	BNE 22$
+	BR 3$
+
+21$:	CLR (R4)+
+	DEC MARLEN
+	BNE 21$
+
+3$:	 JMP GLDXIT		; NEED MORE WORDS
+
+RUNTRN:	MOVB TMPWRD,R5
+	BPL 1$
+	BIC #STRIP,R5
+	 BEQ 4$
+2$:	MOVB #177777,(R4)+
+	DEC R5
+	 BNE 2$
+	 BR 4$
+
+1$:	 BEQ 4$
+3$:	CLRB (R4)+
+	DEC R5
+	 BNE 3$
+
+4$:	MOVB TMPWRD+1,(R4)+
+	DEC ENCLEN
+	 BEQ 41$
+	 JMP GLDXIT		; STILL NEED MORE WORDS
+
+41$:	MOV #DATDEC,GLDPTR
+	 JMP GLDFIN		; COMPLETED COMMAND
+
+
+
+GLDFIN:	CMP R4,GLEND
+	BLO 1$
+	MOV GLBEG,R4
+1$:	CMP R4,GLLIM
+	BNE 2$
+	INC GLBLK
+2$:	MOV R4,GLPTR
+	MOV R4,GTPTR
+	TST GLIDL		; IS THE GOULD IDLE?
+	BEQ GLOOP
+	MASK 5			; FAKE AN INTERRUPT
+	CALL GLDINT		; GO TO HANDLER WITH ANXIOUSLY AWAITED CRUFT
+	BR GLOOP
+
+GLDXIT:	MOV R4,GTPTR
+
+GLOOP:	CLR R0			; R0 IS A CONTINUE FLAG
+	CMP R2,RI.END(R1)	; END OF INPUT QUEUE?
+	BNE 1$
+	 MOV RI.BEG(R1),R2	; CIRCLE AROUND TO BEGINNING
+1$:	MOV R2,RI.LIM(R1)
+	MASK 6
+	CMP R2,RI.PTR(R1)
+	BNE 2$
+	 MOV BTABLR(R3),@RI.FLG(R1)
+	 MOV #WAIT,WAITPL
+	 INC R0			; INHIBIT LOOPING IN THE GOULD MP ROUTINE
+2$:	UNMASK
+	CMP ALNUM(R1),#ALCLIM
+	BGE 5$			; ALLOCATION IS OK
+	 TST ALNUM(R1)
+	 BNE 3$
+	  MOV #%INTCA,R2		; ALLOCATION WAS 0.  MUST BE SCREWED, SO INIT
+	  BR 4$
+3$:	 MOV #%ITCAL,R2
+	 ADD #ALCINC,ALNUM(R1)
+4$:	 CALL ALCPUT
+	 INC R0
+
+5$:	TST R0
+	BNE 6$			; NO MORE TO DO, SO RETURN
+	 JMP GLDMP		; OTHERWISE LOOP AROUND
+6$:	RET
+
+
+
+.SBTTL Gould - Number To String Conversion Routine
+
+CHRNUM:	PUSH <R1,R4>
+	MOV #5,R4
+1$:	MOV R0,R1
+	BIC #177770,R1
+	ADD #60,R1
+	MOVB R1,-(R5)
+	DEC R4
+	BEQ 2$
+	ASR R0
+	ASR R0
+	ASR R0
+	BR 1$
+2$:	TST R0
+	BMI 3$
+	MOVB #60,-(R5)
+	 BR 4$
+3$:	MOVB #61,-(R5)
+4$:	SWAB (R5)+		; GOULD LIKES 'EM BACKWARDS
+	SWAB (R5)+
+	SWAB (R5)+
+	POP <R4,R1>
+	RET
+
+.SBTTL Gould - Status Report Routine
+
+; PUT A STATUS MESSAGE IN THE TEMPORARY BUFFER OF
+; THE GOULD CHANNEL TRANSMIT PROCESS.
+
+STAGLD:	PUSH <R1,R2>
+	MOV CHNL+GLDTTY,R1
+	MOV TS.CNT(R1),R2
+	ASL R2
+	ADD TS.TBF(R1),R2
+	MOV #RUBOUT,(R2)+	; ESCAPE CODE
+	MOV PAGCNT,(R2)+	; PAGE NUMER
+	MOV GLDERR,(R2)+	; GOULD ERROR BYTE
+	MOV #0,(R2)+		; SPARE
+	MOV #0,(R2)+		; SPARE
+	ADD #5,TS.CNT(R1)
+	CLRB @TI.FLG(R1)	; ENABLE
+	POP <R2,R1>
+	RET
+
+.SBTTL Random Utilities - Divide
+
+DIVOR:	.WORD 0
+DIVEE:	.WORD 0
+
+; TAKES 2 ARGS IN DIVOR AND DIVEE AND RETURNS QOTIENT IN R0
+; ONLY DIVIDES POSITIVE NUMBERS!
+DIVIDE:	CLR R0
+1$:	SUB DIVOR,DIVEE
+	BLT 2$
+	INC R0
+	BR 1$
+2$:	RET
+
+.SBTTL ---Start of Low Core---  -  Buffers and Tables
+
+PATLOC:	PATCH
+patch:	.REPT PATSIZ		; a patch location in high core
+	.WORD 0
+	.ENDR
+
+.=TABBEG			; TABBEG is the beginning of the table space.
+				; Its initial value is = LOWCOR
+
+.SBTTL Channel Table Definition Symbols and Macros
+
+;  CHANNEL VARIABLES.
+;  NOTE, THESE ASSIGNMENTS ARE NOT ORDER DEPENDENT SINCE
+;  THE CHANNEL DEFINITION MACRO USES THESE SYMBOLS RELATIVE
+;  TO THE BEGINNING OF A CHANNEL TABLE.
+
+; ALLOCATE TABLE OFFSET POINTERS
+.IRP X,^|CHNLN,ALNUM,KBD,
+	RI.PTR,RI.END,RI.BEG,RI.LIM,RI.BLK,RS.TBF,RS.PTR,RS.CNT,
+        TI.PTR,TI.END,TI.BEG,TI.LIM,TI.BLK,TS.TBF,TS.PTR,TS.CNT,
+	TO.PTR,TO.END,TO.BEG,TO.LIM,TO.BLK,
+	RI.FLG,TI.FLG,RI.CON,TI.CON,RI.ICN,SP.FLG,
+	DEVICE,TCTYP,ROW,COL,XPOS,YPOS,ARDSX,ARDSY,ARDCON,
+	CHSIZE|			; CHSIZE MUST BE THE LAST THING
+     X==.IRPCN*2
+.ENDM
+
+; CHANNEL TABLE MACRO
+	.see CHNL		; channel lookup table
+
+.MACRO	CHNLTB NM
+CHNL'NM: TABORG==.			; ORIGIN FOR THE TABWRD MACRO
+	TABWRD  CHNLN,	NM
+	TABWRD  ALNUM,	0
+	TABWRD  KBD,	CKBD'NM
+	TABWRD  RI.PTR,	RIBF'NM
+	TABWRD  RI.END,	RIBF'NM+RIBFLN		
+	TABWRD  RI.BEG,	RIBF'NM			
+	TABWRD  RI.LIM,	RIBF'NM			
+	TABWRD  RI.BLK,	0				
+	TABWRD  RS.TBF,	RSTR'NM
+	TABWRD  RS.PTR,	RSTR'NM			
+	TABWRD  RS.CNT,	0				
+	TABWRD  TI.PTR,	TIBF'NM			
+	TABWRD  TI.END,	TIBF'NM+TIBFLN		
+	TABWRD  TI.BEG,	TIBF'NM			
+	TABWRD  TI.LIM,	TIBF'NM			
+	TABWRD  TI.BLK,	0				
+	TABWRD  TS.TBF,	TSTR'NM
+	TABWRD  TS.PTR,	TSTR'NM			
+	TABWRD  TS.CNT,	0				
+	TABWRD  TO.PTR,	NETTAB+OD.PTR		
+	TABWRD  TO.END,	NETTAB+OD.END		
+	TABWRD  TO.BEG,	NETTAB+OD.BEG		
+	TABWRD  TO.LIM,	NETTAB+OD.LIM		
+	TABWRD  TO.BLK,	NETTAB+OD.BLK		
+	TABWRD  RI.FLG,	CPRL'NM			
+	TABWRD  TI.FLG,	CPLR'NM
+	TABWRD  RI.CON,	0	; M.P. LEVEL CONTINUATION WORD
+	TABWRD  TI.CON, 0
+	TABWRD  RI.ICN, 0	; INTERRUPT LEVEL CONTINUATION WORD
+	TABWRD  SP.FLG,	0				
+	TABWRD  DEVICE, DEV'NM
+	TABWRD  TCTYP,  DTYP'NM
+	TABWRD  ROW,	0				
+	TABWRD  COL,	0				
+	TABWRD  XPOS,	0				
+	TABWRD  YPOS,	0				
+	TABWRD  ARDSX,	0
+	TABWRD  ARDSY,	0
+	TABWRD  ARDCON,   0
+.=CHNL'NM+CHSIZE
+RIBF'NM: .BLKW RIBFLN/2
+RSTR'NM: .BLKW RSTRLN/2
+TIBF'NM: .BLKW TIBFLN/2
+TSTR'NM: .BLKW TSTRLN/2
+.ENDM
+
+.SBTTL Output Device and Keyboard Mux Table Definition Symbols and Macros
+
+;  ALLOCATE OUTPUT DEVICE TABLE OFFSET POINTERS
+.IRP X,^|OD.PTR,OD.END,OD.BEG,OD.LIM,OD.BLK,OD.BUF,OD.STA,OD.SLP,
+         RI.BUF,RI.STA,DEVLAST|
+X==.IRPCN*2
+.ENDM
+
+.MACRO DEVTAB DEV
+DEV'TAB:
+TABORG==.
+	TABWRD OD.PTR,	DEV'BUF
+	TABWRD OD.END,	DEV'BUF+DEV'BLN
+	TABWRD OD.BEG,	DEV'BUF
+	TABWRD OD.LIM,	DEV'BUF
+	TABWRD OD.BLK,	0
+	TABWRD OD.BUF,	DEV'TBF
+	TABWRD OD.STA,	DEV'TST
+	TABWRD OD.SLP,  0
+	TABWRD RI.BUF,	DEV'RBF
+	TABWRD RI.STA,	DEV'RST
+.=DEV'TAB+DEVLAST
+DEV'BUF: .BLKW DEV'BLN/2
+.ENDM
+
+; MACRO FOR KEY DECODING TABLE ENTRIES:
+; AN 8 BIT QUANTITY IS USED TO INDEX INTO THE MTKTAB
+; BIT 0= SHIFT, 1= TOP, 2 -> 7= KEYBOARD KEY NUMBER
+; RESULTING CODES WITH 7 BIT ON ARE SPECIAL.
+
+.see MTKTAB
+
+; SHIFT+TOP CURRENT IDENTICAL TO TOP
+.MACRO KBDKEY KEY,CHAR,SHIFTC,TOPC,SHTOPC
+       .BYTE CHAR,SHIFTC,TOPC,SHTOPC
+.ENDM
+
+.SBTTL Tables - Meta Keyboard Key Translation Table
+MTKTAB:
+KBDKEY	0,	%KYBRK,	%KYBRK,	%KYBRK,	%KYBRK	;BREAK
+KBDKEY	1,	%KYESC,	%KYESC,	%KYESC,	%KYESC	;ESCAPE
+KBDKEY	2,	'1,	'!,	%KYRPT,	%KYRPT
+KBDKEY	3,	'2,	'",	%KYRPT,	%KYRPT
+KBDKEY	4,	'3,	'#,	%KYRPT,	%KYRPT
+KBDKEY	5,	'4,	'$,	%KYRPT,	%KYRPT
+KBDKEY	6,	'5,	'%,	%KYRPT,	%KYRPT
+KBDKEY	7,	'6,	'&,	%KYRPT,	%KYRPT
+KBDKEY	10,	'7,	'',	%KYRPT,	%KYRPT
+KBDKEY	11,	'8,	'(,	%KYRPT,	%KYRPT
+KBDKEY	12,	'9,	'),	%KYRPT,	%KYRPT
+KBDKEY	13,	'0,	'_,	%KYRPT,	%KYRPT
+KBDKEY	14,	'-,	'=,	'=,	'=
+KBDKEY	15,	'@,	'`,	'`,	'`
+KBDKEY	16,	'^,	'~,	'~,	'~
+KBDKEY	17,	10,	10,	%KYBS,	%KYBS	;BACK SPACE
+KBDKEY	20,	32,	32,	%KYCAL,	%KYCAL	;CALL
+KBDKEY	21,	%KYCLR,	%KYCLR,	%KYCLR,	%KYCLR	;CLEAR
+KBDKEY	22,	11,	11,	%KYTAB,	%KYTAB	;TAB
+KBDKEY	23,	33,	33,	33,	33	;ALT-MODE
+KBDKEY	24,	'q,	'Q,	4,	4,	;and
+KBDKEY	25,	'w,	'W,	37,	37	;or
+KBDKEY	26,	'e,	'E,	22,	22	;intersection
+KBDKEY	27,	'r,	'R,	23,	23	;union
+KBDKEY	30,	't,	'T,	20,	20	;subset
+KBDKEY	31,	'y,	'Y,	21,	21	;superset
+KBDKEY	32,	'u,	'U,	5,	5	;not
+KBDKEY	33,	'i,	'I,	26,	26	;xor
+KBDKEY	34,	'o,	'O,	1,	1	;down arrow
+KBDKEY	35,	'p,	'P,	13,	13	;up arrow
+KBDKEY	36,	'[,	'{,	'{,	'{
+KBDKEY	37,	'],	'},	'},	'}
+KBDKEY	40,	'\,	'|,	'|,	'|
+KBDKEY	41,	'/,	16,	16,	16	;infinity
+KBDKEY	42,	%KYCM,	%KYCM,	%KYDEL,	%KYDEL	;circle minus, cap delta
+KBDKEY	43,	%KYCP,	%KYCP,	%KYGRD,	%KYGRD	;circle plus, cap del
+KBDKEY	44,	14,	14,	%KYFRM,	%KYFRM	;form
+KBDKEY	45,	13,	13,	%KYVT,	%KYVT	;vertical tab
+KBDKEY	46,	177,	177,	%KYRUB,	%KYRUB	;rubout
+KBDKEY	47,	'a,	'A,	34,	34	;.leq.
+KBDKEY	50,	's,	'S,	35,	35	;.geq
+KBDKEY	51,	'd,	'D,	36,	36	;equivalence
+KBDKEY	52,	'f,	'F,	17,	17	;delta (partial derivative)
+KBDKEY	53,	'g,	'G,	32,	32	;not equals
+KBDKEY	54,	'h,	'H,	%KYHLP,	%KYHLP	;HELP!!!!!
+KBDKEY	55,	'j,	'J,	30,	30	;back arrow
+KBDKEY	56,	'k,	'K,	31,	31	;forward arrow
+KBDKEY	57,	'l,	'L,	27,	27	;both ways arrow
+KBDKEY	60,	73,	'+,	'+,	'+	; ";"
+KBDKEY	61,	':,	'*,	'*,	'*
+KBDKEY	62,	15,	15,	%KYCR,	%KYCR	;carriage return
+KBDKEY	63,	12,	12,	%KYLN,	%KYLN	;line feed
+KBDKEY	64,	37,	37,	%KYNXT,	%KYBCK	;next, back
+KBDKEY	65,	'z,	'Z,	2,	2	;alpha
+KBDKEY	66,	'x,	'X,	3,	3	;beta
+KBDKEY	67,	'c,	'C,	6,	6	;epsilon
+KBDKEY	70,	'v,	'V,	10,	10	;lambda
+KBDKEY	71,	'b,	'B,	7,	7	;pi
+KBDKEY	72,	'n,	'N,	24,	24	;for all
+KBDKEY	73,	'm,	'M,	25,	25	;there exists
+KBDKEY	74,	54,	74,	74,	74	; <
+KBDKEY	75,	'.,	76,	76,	76	; >
+KBDKEY	76,	'/,	'?,	'?,	'?	; ?
+KBDKEY	77,	40,	40,	%KYRPT,	%KYRPT	;space
+
+.SBTTL Tables - Channel and Output Device Tables and Buffers
+
+; DEFINE CHANNEL TABLE POINTER LOOK UP TABLE
+CHNL:	.REPT NTTY
+	      .IRP N,\.RPCNT
+	           CHNL'N
+	      .ENDM
+	.ENDR
+
+; DEFINE CHANNEL TABLES AND BUFFERS
+	.REPT NTTY
+	CHNLTB \.RPCNT
+	.ENDR
+
+; DEFINE OUTPUT DEVICE TABLES AND BUFFERS
+	.IRP DEV,<NET,AAD,GTV>
+	     DEVTAB DEV
+	.ENDM
+
+; DEFINE TEK OUTPUT DEVICE TABLES AND BUFFERS
+	.REPT NTEK
+	    .IRP N,\.RPCNT+1
+	    TK'N'BLN==TEKBLN
+	    DEVTAB TK'N
+	    .ENDM
+	.ENDR
+
+; KEYBOARD MUX CHANNEL <-> KEYBOARD NUMBER ASSOCIATION
+KMXTAB:	.REPT NKBD
+	     .IRP N,\.RPCNT
+		  KBD'N
+	     .ENDM
+	.ENDR
+
+; RANDOM BITS FOR AA DISPLAY AND BELLS
+; NOTE, THE 200,,0 BIT IS RESERVED FOR THE REPEAT HACK
+AADBIT:	.REPT NAAD
+	      .IRP N,\.RPCNT+1
+		   AADB'N
+	      .ENDM
+	.ENDR
+
+; BELL BITS FOR THE BELL MULTIPLEXOR (TOTAL CROCK FOR NOW)
+BELBIT:	0
+	0
+	0
+	100
+	140
+	.REPT 5
+	100			;FOR NOW
+	.ENDR
+
+; %TVLDC IS THE GRINNELL LOAD DISPLAY CHANNEL MASK COMMAND.
+; DISABLES ALL CHANNELS BY ITSELF.  INDEX THIS TABLE RELATIVE TO GTV1
+
+GTVLDC:	%TVLDC+1
+	%TVLDC+2
+	%TVLDC+4
+	%TVLDC+10
+	%TVLDC+20
+
+; LOAD WRITE MODE COMMANDS.  PER TV MEMORY.
+GTVLWM:	.REPT NGTV
+	%TVLWM+%TBNWM
+	.ENDR
+
+; Default background (per memory), used by TDRST
+
+GTVBGD:	.REPT NGTV
+	%TVLWM+%TBNWM
+	.ENDR
+
+; SAVED X CURSOR POSITION (FOR ERASING)
+GTVOCX:	.REPT NGTV
+	.WORD 0
+	.ENDR
+
+; SAVED Y CURSOR POSITION (FOR ERASING)
+GTVOCY:	.REPT NGTV
+	.WORD 0
+	.ENDR
+
+; CURSOR DRAWING DISPATCH TABLE
+GTVCUR:	.REPT NGTV
+	LINCUR
+	.ENDR
+
+; BLINK COUNT TABLES
+GTVBCN:	.REPT NGTV
+	.WORD 0
+	.ENDR
+
+; CURSOR COMMAND STACK
+	.word 0
+TVCSTE:	.BLKW <<NGTV*2>+4>
+	.WORD 0
+TVCSTK:	.WORD TVCSTK-2			;TOP OF THE STACK
+
+
+.SBTTL Tables - Predefined Gould Macro Blocks 
+
+			; ALPHA MODE SELECT
+SALBLK:	.WORD 4			; DISABLE
+	.WORD 403		; ENABLE
+	.WORD 2			; CUT
+	.WORD 100001		; POPJ
+SALEND:
+
+			; LOW SPEED GRAPHICS MODE SELECT
+SLGBLK:	.WORD 4			; DISABLE
+	.WORD 1			; GRAPHIC COMMAND
+	.WORD 5			; LAST LINE FLAG
+	.WORD 403		; ENABLE
+	.WORD 2			; CUT
+	.WORD 100001		; POPJ
+SLGEND:
+
+			; HIGH SPEED GRAPHICS MODE SELECT
+SHGBLK:	.WORD 4			; DISABLE
+	.WORD 1			; GRAPHIC COMMAND
+	.WORD 403		; ENABLE
+	.WORD 2			; CUT
+	.WORD 100001		; POPJ
+SHGEND:
+
+
+			; EOF OF FILE
+EOFBLK:	.WORD 2			; CUT	------|
+				;	      |
+	.WORD 4			; DISABLE     |
+	.WORD 403		; ENABLE      |
+				;       <-----|
+	.WORD 601		; LINE ADVANCE
+	.WORD 140000		; REPEAT 12 (OCTAL) TIMES
+	.WORD 12
+	.WORD -102			; DMA COUNT
+	.REPT 102
+	.NLIST
+	.WORD 36475		; DOUBLE DASH
+	.LIST
+.ENDR
+	.WORD 140001		; END OF REPEAT
+;	.WORD 100		; END OF FILE INDICATOR
+;	.WORD -22			; DMA COUNT
+;	.ASCII /          /
+;	.BLKW 3
+;PAGLST:	.ASCII /  O(TCLA )APEG SAB D/	;  (OCTAL) PAGES BAD
+	.WORD 140000		; REPEAT 12 (OCTAL) TIMES
+	.WORD 12
+	.WORD -102			; DMA COUNT
+	.REPT 102		; DOUBLE DASH
+	.NLIST
+	.WORD 36475
+	.LIST
+.ENDR
+	.WORD 140001		; END OF REPEAT
+
+	.WORD 100001		; JMP TO WHERE WE WERE BEFORE
+EOFEND:
+PAGLST:	.BLKW 40		; TEMPORARY
+
+
+			; SMEAR PROTECTION PAGE
+SMRBLK:	.WORD 4			; DISABLE
+	.WORD 403		; ENABLE
+	.WORD 2			; CUT
+	.WORD 140000		; START REPEAT
+	.WORD 25		;	25 (OCTAL) TIMES
+	.WORD -1		; DMA COUNT
+	.WORD 20040		; DOUBLE SPACE
+	.WORD 140001		; END REPEAT
+	.WORD 100001		; END JUMP
+SMREND:
+
+.SBTTL BUFFERS FOR THE LAB EQUIPMENT
+LABBF0:	.BLKB 256.
+LABBF1:	.BLKB 256.
+LABBF2:	.BLKB 256.
+LABBF3:	.BLKB 256.
+LABBF4:	.BLKB 256.
+LABBF5:	.BLKB 256.
+
+
+.SBTTL  Tables - Gould Variables, Buffers and Tables 
+MARLEN:	.WORD 0
+DATLEN:	.WORD 0
+DATLN1:	.WORD 0
+ENCLEN:	.WORD 0
+MARLN1:	.WORD 0
+TMPWRD:	.WORD 0
+GLDPND:	.WORD CHRDEC
+WRDPTR:	.WORD MAKWD1
+GLDPTR:	.WORD DATDEC
+EODFLG:	.WORD 0
+QOTFLG:	.WORD 0
+GRFFLG:	.WORD 0
+COLOR:	.WORD 0
+GLDTAB:			; JUST FOR RANDOMNESS
+GLPTR:	.WORD GLDBUF
+GTPTR:	.WORD GLDBUF
+GLEND:	.WORD <LOWLIM-<LBUFL+22>>
+GLBEG:	.WORD GLDBUF
+GLLIM:	.WORD GLDBUF
+GTLIM:	.WORD GLDBUF
+GLBLK:	.WORD 0
+
+GLIPTR:	.WORD CMIDEC
+JMPFLG:	.WORD 0
+REPFLG:	.WORD 0
+PNDR0:	.WORD 0
+JMPRET:	.WORD 0
+REPRET:	.WORD 0
+REPCNT:	.WORD 0
+GLIDL:	.WORD 0
+GLERR:	.WORD 0
+GLDCLK:	.WORD 0
+PAGMNG:	.WORD 0
+PAGCNT:	.WORD 177
+GLDERR:	.WORD 0
+
+;  START OF GOULD BUFFER 
+GLDBUF:	.WORD 0
+
+.SBTTL Symbol Definitions - TTY Symbols
+
+; TCTYPE'S
+%TCGLD==0			; GOULD
+%TCTEK==1*2			; TEKTRONIX
+%TCIML==2*2			; IMLAC (DMA INTERFACE)
+%TCAAD==3*2			; ANN ARBOR DISPLAY
+%TCGTV==4*2			; GRINNELL TV (OR PLASMA DISPLAY)
+%TCDEV==5*2			; DEVICE TTY (FOR DATA TRANSMISSION)
+
+; CONTROL CHARACTERS REFERED TO OFTEN
+CTL.A==1
+CTL.G==7
+BS==10
+TAB==11
+LF==12
+CTL.L==14
+CR==15
+CTL.P==20
+CTL.V==26
+CTL.Z==32
+ALTMODE==33
+CTL.BSL==34
+CTL.US==37
+RUBOUT==177		; RUBOUT
+SPACE==40
+
+; ARDS GRAPHICS CONVENTION BITS
+ARDNEG==1
+ARDBIT==40
+ARDSGN==1_15.
+ARDTYP==1_10.
+%ARCTR==512.
+
+; TTY DISPLAY CODES (FROM I.T.S. - ONLY THOSE THAT ARE NEEDED).
+%TDEOL==203
+%TDDLF==204
+%TDCRL==207
+%TDNOP==210
+%TDORS==214
+%TDFS==216
+%TDCLR==220
+%TDBEL==221
+%TDPAD==240
+
+; Random masks that are useful
+
+MASK37==177740		; MASK THE LOW 5 BITS
+MASCII==177600		; MASK THE ASCII PART OF THE DATA
+MBYTE==177400		; MASK FOR CLEARING THE LEFT BYTE (FLUSHING SIGN EX.)
+
+
+.SBTTL Symbol Definitions - Keyboard multiplexor
+
+; 12-BIT KEYBOARD CODES
+
+; BUCKY BITS
+%TXTOP==4000		; TOP BIT
+%TXSFL==2000		; SHIFT LOCK
+%TXSHT==1000		; SHIFT
+%TXMTA==400		; META
+%TXCTL==200		; CONTROL
+
+; SPECIAL KEY CODES
+%KYILL==200	; ILLEGAL
+%KYBRK==201	; BREAK
+%KYESC==202	; ESCAPE
+%KYCAL==203	; CALL
+%KYCLR==204	; CLEAR
+%KYDEL==205	; CAP  DELTA
+%KYCM==206	; CIRCLE  MINUS
+%KYGRD==207	; DEL
+%KYCP==210	; CIRCLE  PLUS
+%KYBCK==211	; BACK
+%KYNXT==212	; NEXT
+%KYHLP==213	; HELP
+%KYFRM==214	; FORM
+%KYBS==215	; BACK  SPACE
+%KYVT==216	; VERTICAL  TAB
+%KYCR==217	; CRLF AND  BS
+%KYLN==220	; LF OR  DNAR
+%KYRUB==221	; FORWARD  DELETE
+%KYRPT==222	; KBD  REPEAT
+%KYTAB==223	; TAB
+%KYSPC==224	; SPACE
+%ITCAL==225	; INCREMENT TTY CHARACTER ALLOCATION (NOT KEY)
+%INTCA==226	; INITIALIZE TTY CHARACTER ALLOCATION (NOT KEY)
+%RTYCP==227	; REPORT TTY CURSOR POSITION
+
+
+KMXENI==101		; KEYBOARD MULTIPLEXOR INTERRUPT ENABLE
+%KMSLP==5*60.		; Sleep time between Keymux checks (5 secs.)
+
+
+MAXMUX==177770		; NUMBER OF KEYMUX INPUT LINES (POWER OF 2)
+%SPKEY==200		; SPECIAL KEY
+%SBITS==MASK37		; SPECIAL BITS (META,TOP, CTRL, SHIFT,SHIFT LOCK)
+%SHLOK==%TXSFL_-7	; SHIFT LOCK (LH BYTE ON INPUT)
+
+.sbttl Symbol Definitions - Tektronix and Ann Arbor Symbols
+
+; TEKTRONIX DISPLAY CODES
+%TKCWD==14.		; CHARACTER WIDTH
+%TKCHT==22.		; CHARACTER HEIGHT
+%TKHOM==767.		; HOME FOR ALPHA CURSOR
+%TKTOP==779.		; TOP OF TEKTRONIX SCREEN
+%TKSLP==60.		; NUMBER OF LINE CLOCK TICKS TO SLEEP FOR A SCREEN CLEAR
+
+TEKWID==74.		; CHARACTERS/LINE
+TEKHGT==35.		; LINES/SCREEN
+TEKPAD==1000.		; PADDING FOR SCREEN CLEAR (UGH!)
+
+%TKESC==33		; ESCAPE PREFIX FOR FOLLOWING CODES:
+%TKENQ==5		; REQUEST STATUS OR GRAPHIC INPUT
+%TKCLR==14		; CLEAR SCREEN
+%TKAPL==16		; SELECT APL CHARACTER SET
+%TKASC==17		; SELECT ASCII CHARACTER SET
+%TKCPY==27		; HARDCOPY
+
+TEKLSB==177740		; LOW 5 BITS
+TEKMSB==176037		; HIGH 5 BITS
+%TKEGM==35		; ENTER GRAPHICS MODE
+%TKXGM==37		; EXIT GRAPHICS MODE
+%TKHIY==40
+%TKLOY==140
+%TKHIX==40
+%TKLOX==100
+
+
+; ANN ARBOR DISPLAY CONTROLLER CODES
+AADWID==80.			; SCREEN WIDTH
+AADHGT==24.			; SCREEN HEIGHT
+AADB1==1_8			; ENABLE #1 (NOTE 200,,0 RESERVED FOR REPEAT HACK).
+AADB2==2_8			; ENABLE #2
+
+%AAPOS==17
+%AACWD==1
+%AACHT==1
+%AAGCH==56
+%AAGHT==33.
+%AAGWD==16.
+%AANUL==AADB1			; used to simply keep interrupts going
+%AARPT==1_15.
+%AAPCH==56			; Character used for plotting (?!?)
+%AAMSK==1400			; Mask for output mpx bits
+
+; SPECIAL OFFSETS FOR TEKTRONIX AND ANN ARBOR CHANNELS
+PADCNT==ARDCON
+
+.SBTTL Symbol Definitions - Grinnell TV Parameters and Instruction Codes
+
+GTVWID==86.
+GTVHGT==50.
+%TVMAX==777			; MAXIMUM LINE ELEMENT NUMBER
+%TVCHT==10.			; 12 RASTER LINES PER CHARACTER LINE
+%TVCWD==6			; CHARACTER WIDTH IN ELEMENTS
+%TVDCN==2			; AMOUNT TO DESCEND FOR g,p,q,y, etc.
+%TVDCO==1			; Amount to descend for :, j, beta, etc.
+%TVCTM==3			; NUMBER OF LINE CLOCK TICKS BETWEEN CURSOR UPDATES
+%TVDAB==10			; DATA ACCEPTED BIT
+%TVBOF==4			; TIME DURING WHICH CURSOR IS OFF
+%TVBMX==20			; BLINK CYCLE TIME.
+
+; GRINNELL TV INTERNAL TEST CODES
+%GRTST==124000			; 124000 - ENTER TEST MODE
+%GRTS1==130000			; 130000 - TEST 1
+%GRTS2==130001			; 130001 - TEST 2
+%GRTS3==130002			; 130002 - TEST 3
+%GRTS4==130003			; 130003 - TEST 4
+
+%TVOP4==170_11			; 4 BIT OP CODE FIELD 
+%TVOP5==174_11			; 5 BIT OP CODE FIELD 
+%TVOP6==176_11			; 6 BIT OP CODE FIELD
+
+; 4 BIT OP CODE INSTRUCTIONS:
+%TVWID==0_14			; WRITE IMAGE DATA
+%TVLSM==1_14			; LOAD SUBCHANNEL MASK (NOT USED IN OUR SYSTEM)
+%TVLDC==10_14			; LOAD DISPLAY CHANNEL (SELECT TV)
+%TVNOP==11_14			; NO OP
+%TVSPD==12_14			; SELECT PERIPHERAL DEVICE
+%TVLPA==13_14			; LOAD PERIPHERAL ADDRESS
+%TVLPR==14_14			; LOAD PERIPHERAL REGISTER
+%TVLPD==15_14			; LOAD PERIPHERAL DATA
+%TVRPD==16_14			; READ PERIPHERAL DATA
+%TVNO1==17_14			; NO OP
+
+; 6 BIT OP CODE INSTRUCTIONS:
+%TVWGD==20_11			; WRITE GRAPHIC DATA
+%TVWAC==22_11			; WRITE ASCII CHARACTER
+%TVLWM==24_11			; LOAD WRITE MODE
+%TVLUM==26_11			; LOAD UPDATE MODE
+%TVERS==30_11			; ERASE SCREEN
+%TVERL==32_11			; ERASE RASTER LINE
+%TVSLU==34_11			; SPECIAL LOAD UPDATE (ONE TIME UPDATE)
+%TVEGW==36_11			; EXECUTE GRAPHIC WRITE
+
+; 5 BIT OP CODE INSTRUCTIONS :
+; LOAD THE E (HORZ. ELEMENT) AND L (RASTER LINE) REGISTERS.
+%TVLER==40_11			; LOAD EA RELATIVE
+%TVLEA==44_11			; LOAD EA
+%TVLEB==50_11			; LOAD EB
+%TVLEC==54_11			; LOAD EC
+%TVLLR==60_11			; LOAD LA RELATIVE
+%TVLLA==64_11			; LOAD LA
+%TVLLB==70_11			; LOAD LB
+%TVLLC==74_11			; LOAD LC
+
+; SPECIAL BITS IN INSTRUCTIONS:
+
+%TBLWI==1_12			; LOAD WRITES IMMEDIATELY.  USED WITH 40-74 ABOVE
+
+  ; WRITE MODE BITS:
+%TBWCV==1			; 1= CURSOR VISIBLE, 0= OFF
+%TBWCS==2			; 0= USE La and Ea for cursor pos,
+				; 1= use La+Lb and Ea+Eb
+%TBWWD==4			; 0= single width, 1= double
+%TBWHT==10			; 0= single height, 1=double
+%TBWVG==20			; 1=vector graphics, 0= rectangle
+%TBWZW==40			; 1= Zero write (not used in our system)
+%TBWOR==100			; 0= replacement mode (SET), 1= OR mode
+%TBWBG==200			; 0= dark background, 1= light
+%TBNWM==%TBWOR+%TBWVG		; NORMAL WRITE MODE
+
+  ; AUTOMATIC UPDATE MODE BITS:
+%TBUEN==0
+%TBUEC==1
+%TBUEBA==2
+%TBUEAC==3
+%TBULN==0_2
+%TBULC==1_2
+%TBULBA==2_2
+%TBULAC==3_2
+%TBUS==0_4
+%TBUSH==1_4
+%TBUSD==2_4
+%TBUSU==3_4
+%TBNUM==%TBUEN			; ADD EC TO EA, LA UNCHANGED, NO SCROLL
+
+.SBTTL Symbol Definitions - Gould Command Codes and Status Bits
+
+LBUFL==410	; MAXIMUM SIZE OF A GOULD LINE BUFFER (IN BYTES)
+GLDTIM==15.	; TIME (IN 60TH'S OF SECOND) FOR SMEAR TIMEOUT
+STRIP==177600	; BIT IN BUFFER WORD WHICH INDICATED STRIPED GRAPHICS
+
+
+; GOULD COMMAND CODES
+ %GCFF==0	; TOP-OF-FORM COMMAND (128 RASTERS ON ROLL PAPER)
+ %GCGRF==1	; GRAPHIC MODE COMMAND
+ %GCCUT==2	; CUT COMMAND (NO CUTTER ON THIS MACHINE, THOUGH)
+ %GCON==3	; TURN PRINTER ON
+ %GCOFF==4	; TURN PRINTER OFF
+ %GCLSL==5	; LAST LINE (GRAPHIC MODE).  => 2 MORE SCAN LINES.
+ %GCION==6	; INTERRUPT ON
+ %GCIOF==7	; INTERRUPT OFF
+ %GCHOM==200	; HOME (128 RASTER UNITS)
+ %GCADV==201	; ADVANCE ONE LINE
+
+; PSEUDO COMMAND CODES
+
+ %GCSRP==300	; START OF REPEAT
+ %GCERP==301	; END OF REPEAT
+
+
+; MACRO COMMAND CODES
+
+ SLALPH==140000	; SELECT ALPHA MODE
+ SLLGRF==150000	; SELECT LOW SPEED GRAPHICS MODE
+ SLHGRF==160000	; SELECT HIGH SPEED GRAPHICS MODE
+ SLEOF==170000	; EOF (TAIL SHEET HACKERY)
+
+; GOULD STATUS BITS
+ %GSNRD==400	; NOT READY (INTERLOCK TRIPPED)
+ %GSDON==2000	; DMA TRANSFER COMPLETE
+ %GSBSY==4000	; BUSY (PAPER MOVEMENT, SYSTEM BEING RESET, ETC.)
+ %GSVAC==10000	; VACUUM FAULT
+ %GSPAP==20000	; PAPER LOW
+ %GSTIM==40000	; HIGH SPEED GRAPHICS TIMEOUT
+ %GSERR==40400	; ALL ERROR BITS EXCEPT PAPER LOW
+
+
+
+;  SPECIAL GOULD COMMUNICATION BYTE CODES
+
+%CCSOD=205	; ESCAPE FOR BEGINNING OF DATA
+%CCEOD=206	; ESCAPE FOR END OF DATA
+%CCQOT=215	; TO QUOTE 8 BIT CODES IN GRAPHICS MODE
+%CCACK=301	; ARE WE BEING PAGED?
+
+.SBTTL Symbol Definitions - Interface Device Registers
+
+; DEC INTERFACES
+
+; SERIAL INTERFACES
+%CRCSR==177560			; CONSOLE TTY
+%CRBUF==177562
+%CXCSR==177564
+%CXBUF==177566
+%DRCSR==175610			; DL-11E 40 KBAUD
+%DRBUF==175612
+%DXCSR==175614
+%DXBUF==175616
+%ERCSR==175620			; DL-11E 9600 BAUD
+%ERBUF==175622
+%EXCSR==175624
+%EXBUF==175626
+%FRCSR==175630			; DL-11E 2400 BAUD
+%FRBUF==175632
+%FXCSR==175634
+%FXBUF==175636
+%GRCSR==175640			; DL-11E 9600 BAUD
+%GRBUF==175642
+%GXCSR==175644
+%GXBUF==175646
+%HRCSR==175650			; DL-11E 9600 BAUD
+%HRBUF==175652
+%HXCSR==175654
+%HXBUF==175656
+
+; PARALLEL INTERFACES
+; INPUT
+%I1ACS==167750			; DR-11L #1 SIDE 1
+%I1ABF==167752
+%I1BCS==167754			; DR-11L #1 SIDE 2
+%I1BBF==167756
+%I2ACS==167760			; DR-11L #2 SIDE 1 (LAB INTERFACE)
+%I2ABF==167762
+%I2BCS==167764			; DR-11L #2 SIDE 2
+%I2BBF==167766
+
+
+; OUTPUT
+%O1ACS==167770			; DR-11M SIDE 1
+%O1ABF==167772
+%O1BCS==167774			; DR-11M SIDE 2
+%O1BBF==167776
+
+
+
+; INTERRUPT BITS FOR DEC INTERFACES
+INTRQB==200		; INTERRUPT REQUEST BIT
+INTARM==100
+%OSTAB==400		; OUTPUT STATUS BIT
+
+; GOULD ELECTROSTATIC PRINTER PLOTTER
+%GLCSR==166000		; COMMAND AND STATUS REGISTER
+%GLWC==166002		; NEGATIVE WORD COUNT REG
+%GLCA==166004		; CURRENT ADDRESS REG
+
+%UNDEF==0
+
+.SBTTL Symbol Definitions - Device/Interface Associations
+
+%AADST=%O1ACS		; ANN ARBOR CONTROLLER
+%AADBF=%O1ABF
+
+%BELBF=%O1ABF		; BELL DINGER (SHARES WITH ANN ARBORS)
+
+%GTVST=%O1BCS		; GRINNELL TV SYSTEM
+%GTVBF=%O1BBF
+
+%KYSTA=%I1ACS		; KEYBOARD MULTIPLEXOR
+%KYBUF=%I1ABF
+
+NETRST=%DRCSR		; NET DEVICE -> DL-11 MULTIPLEXED LINE TO PDP-10
+NETRBF=%DRBUF
+NETTST=%DXCSR
+NETTBF=%DXBUF
+
+GLDCSR=%GLCSR		; GOULD LINE PRINTER
+GLDWC=%GLWC
+GLDCA=%GLCA
+
+TK1RST=%CRCSR		; (CPU CONSOLE TTY) TEKTRONIX #1
+TK1RBF=%CRBUF
+TK1TST=%CXCSR
+TK1TBF=%CXBUF
+
+TK2RST=%ERCSR		; DL-11  -> TEKTRONIX #2
+TK2RBF=%ERBUF
+TK2TST=%EXCSR
+TK2TBF=%EXBUF
+
+TK3RST=%FRCSR		; DL-11  -> TEKTRONIX #3
+TK3RBF=%FRBUF
+TK3TST=%FXCSR
+TK3TBF=%FXBUF
+
+AADTST=%AADST		; ANN ARBOR DISPLAYS (MULTIPLEXED)
+AADTBF=%AADBF
+
+GTVTST=%GTVST		; GRINNELL TVS (MULTIPLEXED)
+GTVTBF=%GTVBF
+
+KMXRST=%KYSTA		; KEYBOARD MULTIPLEXOR
+KMXRBF=%KYBUF
+
+LB1CSR=%I2ACS		;LAB INTERFACE
+LB1BUF=%I2ABF
+LB2CSR=%I2BCS
+LB2BUF=%I2BBF
+
+LBINT=100		;INTERRUPT ENABLE
+LBRDY=1			;READY TO READ DATA BIT
+
+
+.SBTTL Symbol Definitions -  Interrupt and Trap Vectors 
+
+%ERRV==4
+%ILIV==10
+%BPTV==14
+%IOTV==20
+%PWRV==24
+%EMTV==30
+%TRPV==34
+%CLRV==60
+%CLXV==64
+%LKV==100
+%GLDV==174
+%KMXV==200
+%IMLV==204
+%AADCV==210
+%GTVV==214
+%DLRV==300
+%DLXV==304
+%ELRV==310
+%ELXV==314
+%FLRV==320
+%FLXV==324
+%GLRV==330
+%GLXV==334
+%HLRV==340
+%HLXV==344
+%LB1RV==350
+%LB2RV==354
+
+%MSTR==340	; MASTER PRIORITY, NO CONDITION CODES SET
+
+	; THESE GIVE MASTER PRIORITY WITH CONDITION CODE BITS SET TO
+	; NOTIFY THE UNEXPECTED TRAP HANDLER WHICH STATE WAS RAISED
+	; IDEALLY THEY SHOULD NEVER HAVE TO BE USED
+
+%MSTR1==341
+%MSTR2==342
+%MSTR3==343
+%MSTR4==344
+%MSTR5==345
+%MSTR6==346
+%MSTR7==347
+
+%CLRPR==200		; PRI 4, (DEVICE AT BR4)
+%CLTPR==200		; PRI 4, (DEVICE AT BR4)
+%KMXPR==200		; PRI 4, (DEVICE AT BR4)
+%IMLPR==200		; PRI 4, (DEVICE AT BR4)
+%GTVPR==200		; PRI 4, (DEVICE AT BR4)
+%AADPR==200		; PRI 4, (DEVICE AT BR4)
+%ELRPR==200		; PRI 4, (DEVICE AT BR4)
+%ELXPR==200		; PRI 4, (DEVICE AT BR4)
+%FLRPR==200		; PRI 4, (DEVICE AT BR4)
+%FLXPR==200		; PRI 4, (DEVICE AT BR4)
+%GLRPR==200		; PRI 4, (DEVICE AT BR4)
+%GLXPR==200		; PRI 4, (DEVICE AT BR4)
+%HLRPR==200		; PRI 4, (DEVICE AT BR4)
+%HLXPR==200		; PRI 4, (DEVICE AT BR4)
+%GLDPR==240		; PRI 5, (DEVICE AT BR5)
+%LKPR==240		; PRI 5, (DEVICE AT PSEUDO BR6)
+%DLRPR==300		; PRI 6, (DEVICE AT BR6)
+%DLXPR==300		; PRI 6, (DEVICE AT BR6)
+%LBRPR==200		; PRI 4,
+
+
+
+.=%ERRV
+	CPUERR			; CPU ERROR
+	%MSTR1
+.=%ILIV
+	ILLOPR			; ILLEGAL INSTRUCTIONS
+	%MSTR2
+.=%BPTV
+	BPTTRP			; BREAKPOINT TRAP
+	%MSTR3
+.=%IOTV
+	IOTTRP			; IOT TRAP
+	%MSTR4
+.=%PWRV
+	POWROF			; POWER FAIL - RESTART
+	%MSTR
+.=%EMTV
+	EMTTRP			; EMULATOR TRAP
+	%MSTR5
+.=%TRPV
+	UUOH			; TRAP INSTRUCTION
+	%MSTR6
+.=%CLRV
+	TK1RIN			; CONSOLE RECEIVED CHARACTER
+	%CLRPR
+.=%CLXV
+	TK1TIN			; CONSOLE TRANSMITTED CHARACTER
+	%CLTPR
+.=%LKV
+	CLKINT			; LINE FREQUENCY CLOCK
+	%LKPR
+
+.=%GLDV
+	GLDINT			; GOULD INTERRUPT
+	%GLDPR
+.=%KMXV
+	KMXINT			; KEYBOARD MULTIPLEXOR
+	%KMXPR
+.=%IMLV
+	IMLINT
+	%IMLPR
+.=%AADCV
+	AADINT			; ANN ARBOR DISPLAY CONTROLLER
+	%AADPR
+.=%GTVV
+	GTVINT
+	%GTVPR
+.=%DLRV
+	NETINR			; DL-11 #1 RECEIVED CHARACTER
+	%DLRPR
+.=%DLXV
+	NETINT			; DL-11 #1 TRANSMITTED CHARACTER
+	%DLXPR
+.=%ELRV
+	TK2RIN			; DL-11 #2 RECEIVED CHARACTER
+	%ELRPR
+.=%ELXV
+	TK2TIN			; DL-11 #2 TRANSMITTED CHARACTER
+	%ELXPR
+.=%FLRV
+	TK3RIN			; DL-11 #3 RECEIVED CHARACTER
+	%FLRPR
+.=%FLXV
+	TK3TIN			; DL-11 #3 TRANSMITTED CHARACTER
+	%FLXPR
+.=%GLRV
+	RTI		; FOR NOW
+	%GLRPR
+.=%GLXV
+	RTI			; FOR NOW
+	%GLXPR
+.=%HLRV
+	RTI		; FOR NOW
+	%HLRPR
+.=%HLXV
+	RTI			; FOR NOW
+	%HLXPR
+
+.=%LB1RV
+	LB1RCV
+	%LBRPR
+.=%LB2RV
+	LB2RCV
+	%LBRPR
+
+.SBTTL Documentation and Conventions
+
+.END INIT
+
+; not much here yet!

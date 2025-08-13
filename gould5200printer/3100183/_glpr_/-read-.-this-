@@ -1,0 +1,27 @@
+
+This directory contains queue and log files for the GOULD spooler
+and the VERSATEC spooler.  Questions can be directed to DCP@MCor
+RLL@MC 
+
+Gould files:
+
+DONE   QUEUE	The last queue file processed
+GLP    NOTICE	Current state of the gould
+    Q1 *	Small size and/or high priority (queue 1) requests.
+    Q2 *	Medium size and/or medium priority requests.
+    Q3 *	Large size and/or low priority requests
+
+Versatec files:
+
+%LOG   <date>	The log for <date>
+%LOG   %NEXT	The current log as it is being updated
+PFC... >	Output is destined for the PFC V80
+GLD... >	Output is destined for the building 38 GOULD
+...TXT >	File type is text.
+...ARD >	File type is ARDS graphics
+...TEK >	File type is Tektronix graphics (7 bit [ITS] files)
+...TK8 >	File type is 8 bit Tektronix (typically from LLL)
+...DDV >	File type is LLL-format Double Density Versatec file
+
+(note: the ... are not there; they signify the other component of
+the filename, i.e. the first file name is two dimensional.)

@@ -1,0 +1,20 @@
+
+JLK@MIT-MC 06/01/77 09:21:00
+To: MACRAK at MIT-MC
+CC: JLK at MIT-MC, CFFK at MIT-MC, (FILE [GLPT;INFO R11]) at MIT-MC
+We should probably have a hack for the GTV's so that the origin for
+writing characters changes periodically to make the phosphor on the monitors
+wear more uniformly (i.e. move the origin up or down 1-2 raster lines).
+
+JLK@MIT-MC 01/22/77 11:27:59
+To: BROM at MIT-MC, CFK at MIT-MC, MACRAK at MIT-MC
+PLDRW;CBLBOX WIRING describes the cable box (per office) wiring.
+PLDRW;BLDG26 CABLE describes the cable to 26-209 (Coppi's group)
+PLDRW;BLDG38 CABLE describes the cable between MC and 38-246.
+
+PLDRW should be used from now on as a central place for all
+hardware documentation for our group.  Also, these files will
+be listed and put in the file drawer in the computer room.
+I will also move the IMLAC hardware documentation over to
+that directory (or make links).
+

@@ -1,0 +1,121 @@
+;;; -*- Lisp -*-	GLDSTS -- Gould status.
+
+(comment)
+(setq ^w t)
+
+;;; Program to print out the status of the Gould spooler.
+
+
+(sstatus feature noldmsg)
+
+(defun report-on-queue ()
+       (do ((l (car (errset (read -1 (open '((dsk |.glpt.|) q >) '(in))) nil))
+	       (cdr l))
+	    (first? t nil))
+	   ((null l)
+	    (and first? (princ '|	none/
+|)))
+	   (cond ((car l)
+		  (princ (namestring (caar l)))
+		  (princ '| for |)
+		  (princ (cdr (assq 'sender (caddr (cddar l)))))
+		  (terpri)))))
+
+
+(defun report-on-mail ()
+       (or (> 
+	    (do ((i 1 (1+ i)) (file () (close file)))
+		;; This isn't really right....
+		(nil)
+		(setq file (car (errset (open (list '(dsk |.glpt.|) 'glmail i)
+					      '(in))
+					nil)))
+		(cond ((null file) (return i)))
+		(copy-to file tyo 100)
+		(tyipeek 40 file) (tyipeek 40 file)
+		(copy-to file tyo 15)
+		(tyipeek 137 file)
+		(tyi file)
+		(tyo 40)
+		(copy-to file tyo 15)
+		(terpri))
+	    1)
+	   (princ '|	none/
+|)))
+
+(defun waiting-to-unspool ()
+       (cond ((not (probef '((dsk |.glpt.|) glpt >))))
+	     (t ((lambda (dir base *nopoint)
+		    (cond ((= (length dir) 1)
+			   (princ '|There is one file of length |))
+			  (t (princ '|There are |)
+			     (princ (length dir))
+			     (princ '| files of total length |)))
+		    (princ (setq dir (apply '+ (mapcar '(lambda (x)
+							  (get x 'characters))
+						       dir))))
+		    (princ '| characters/
+waiting to be unspooled onto the Gould./
+It will take approximately |)
+		    (sec-min (// (+ dir 1200.) 2400.))
+		    (princ '|./
+|))
+		    (directory '(((dsk |.glpt.|) glpt *)) '(characters))
+		    10.
+		    t))))
+
+
+(defun copy-to (from to stop)
+       (do ((ch (tyi from) (tyi from)))
+	   ((= ch stop))
+	   (tyo ch to)))
+
+(defun sec-min (secs)
+       (cond ((> secs 59.)
+	      (cond ((< secs 120.)
+		     (princ '|one minute|))
+		    (t (princ (// secs 60.))
+		       (princ '| minutes|)))
+	      (cond ((not (= (\ secs 60.) 0))
+		     (princ '| and |))))
+	     ((= secs 0) (princ '|no time|)))
+       (cond ((= (\ secs 60.) 0))
+	     ((= (\ secs 60.) 1)
+	      (princ '|one second|))
+	     (t (princ (\ secs 60.))
+		(princ '| seconds|))))
+
+
+(defun job-states ()
+       (cond ((probef '((usr) glptr spoolr))
+	      (princ '|The Spooler job exists./
+|)) 
+	     (t (princ '|There is no Spooler job./
+|)))
+       (cond ((probef '((usr) glptr unsplr))
+	      (princ '|The Unspooler exists./
+|))
+	     (t (princ '|The Unspooler does not exist./
+|))))
+
+
+(defun report ()
+       (princ '|State of Gould spooling./
+/
+/
+Files waiting to be processed for the Gould:/
+|)
+       (report-on-queue)
+       (princ '|/
+Requests not yet accepted by the spooler:/
+|)
+       (report-on-mail)
+       (terpri)
+       (job-states)
+       (waiting-to-unspool)
+       (terpri))
+
+((lambda (^w) (terpri) (report)) nil)
+
+(valret '|:kill/
+|)

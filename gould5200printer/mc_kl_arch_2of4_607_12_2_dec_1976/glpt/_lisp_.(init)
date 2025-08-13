@@ -1,0 +1,4 @@
+(COMMENT CORE 80 FIXNUM 20000 SYMBOL 4000)
+(NOUUO T)
+(fasload ttysim fasl dsk rtty11)
+

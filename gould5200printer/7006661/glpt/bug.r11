@@ -1,0 +1,4 @@
+JLK@MIT-MC 02/22/79 10:20:15
+To: (BUG R11) at MIT-MC
+%TDEOL on the bottom line of the screen clears the descenders of the line above.
+

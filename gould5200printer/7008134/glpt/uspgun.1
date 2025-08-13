@@ -1,0 +1,29 @@
+title Unspooler gunner
+
+; AC'S
+A=1 ? B=2 ? C=3 ? D=4 ? E=5 ? F=6 ? G=10 ? H=11 ? P=17
+
+; I/O CHANNELS
+DSKI=12 ? LPTIN=13 ? LPTOUT=14 ? USRI=15
+
+DEFINE SYSCAL NAME,ARGS
+	.CALL [SETZ ? SIXBIT/NAME/ ? ARGS ((SETZ))]
+TERMIN
+
+GUNAME:	SIXBIT /GLPTR/
+usr:	'usr,,0
+GJNAME:	'UNSPLR
+
+
+
+GO:	SYSCAL OPEN,[1000,,USRI ? 5000,,14 ? USR ? GUNAME ? GJNAME]
+	 .value [asciz /:No Unspooler aroundkill
+/]
+	.USET USRI,[.Ruind,,A]		; SEE IF HE IS STOPPED.
+	.gun a,
+	.value [asciz /:Gun failed.kill
+/]
+	.value [asciz /:kill
+/]
+
+	end go

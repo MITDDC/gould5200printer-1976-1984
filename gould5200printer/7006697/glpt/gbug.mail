@@ -1,0 +1,87 @@
+
+CFFK@MIT-MC 02/03/78 13:28:26
+To: (BUG GTPL) at MIT-MC
+The guy that loads the GLDFNT files (LOADFONT* ?) should
+check it's cdate against the cdate of the real font, and reload if
+the real font is more recent.  I was going to do this a few months
+ago, but never got around to actually doing so.
+
+CFFK@MIT-MC 12/10/77 14:22:35
+To: (BUG GTPL) at MIT-MC
+/U doesn't unQ item Spooler is currently working on.  Should?
+
+Todo for LPT mode:
+
+the date printed on top of /L mode listings
+should be the creation date of the file (or else both the creation date
+and the current date should be printed).
+
+Specify by /H[L] or should it be the default??
+
+Allow page size, skip specs
+
+Variable width printing mode?
+----------------
+Todo for GTPL:
+
+Use DIRHNG or some such to detect.  Don't use MAIL
+Use of GTPL when not logged in, hangs within MAIL.
+
+----------------
+Random:
+
+For the record, to get suppression of auto cut, BEGIN-PAGE has to set a bit in
+the new page command, dependent on CUT-PAPER, which will tell the PDP-11 what
+to do.  Then R11MUX has to look for this bit and do the right thing.
+
+Error message go to Uname not Xuname
+
+The routines that crunch the queue should check again to make sure that the file
+hasn't gone away in the mean time .
+
+There should be a way to tell the spoolr not to
+send end of file marks between files, particularly when on does something like
+:GTPL FOO */A  to zap out a whole sequence of plots.  I.e. have it make a
+single output file out of several input ones...
+
+Maybe there should be a FAIL-ACT and/or IOLOSSAGE handler for the spooler
+that qsends a message to the maintainers and then aborts the current file
+(rather than just causing the spoolr to die).
+
+The smear hack is still not getting triggered soon enough.
+I don't understand why since we should be doing about the same things as
+before.  Perhaps CFFK's continuous motion idea would be worth trying...
+
+THE SPOOLER SHOULD TRY HARDER TO HANDLE FATAL ERRORS SUCH AS DEV FULL AND
+DIR FULL ERRORS.  THIS IS INFLICTING PAIN AND CONFUSION ON UNKNOWLEDGEABLE USERS.
+
+Spooler dies on Device (Disk pack) full.
+
+there should be some switch saying "only put one page
+into an output file".  this is important because the
+printer is so slow, that you want it to start printing as
+soon as possible.  (maybe irrelevent with CHAOS net)
+
+paper low interrupt from the gould doesn't cause the pdp-11
+to request the page to be re-sent
+
+----------------------------------------------------------------
+OLD TO DO:
+(2)   Improve GLDSTS
+(3) * MORE OPTIONS (VERIFY, PAGE SIZE, ETC.)
+(5)   DPLT FORMAT FILES.
+(8)   GTPL DEVICE , GTPL^K FOR LONG FORM SPECS, GTPL^F FOR STATUS INFO.
+(9)   XGP-IMAGE INPUT TO GOULD OUTPUT (WITH ROTATION OPTION, DEFAULT).
+(10)  USGLPT: RESEND MUNGED PAGES, CLI COMMUNICATION WITH SPOOLR FOR STATUS
+(11)  OPTIMIZE SCAN-LINE, XGP-SCAN, SCAN-XGP-LINE, - WRITE IN LAP??
+(13) * IMPLEMENT SKIP COMMANDS (ESP. ASCII)
+
+HARDWARE:
+(1) BRING OUT SYSTEM RESET FLAG
+(2) BRING OUT FAN-FOLD/ROLL FLAG
+(3) PAPER CUTTER ADJUSTMENT
+(4) MAINTENANCE LIST (I.E. THINGS WE SHOULD DO REGULARLY, LIKE CLEAR THE PAPER CUTTER OF
+    FINE CUTTINGS, CLEANING THE TONER HEAD, WATERING THE CRYSTALS, ETC.)
+
+* - EASY
+

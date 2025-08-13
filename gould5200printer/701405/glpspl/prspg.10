@@ -1,0 +1,58 @@
+;;; Process files for sending to the Gould in raster image mode.
+;;; Part of the Gould spooling system
+
+(Comment PRSPG (PResS Page) image processor)
+
+;;; FORMAT of a .PRSPG file as originally defined on 2/19/81:
+;;;     each page has a structure which looks like
+;;; 	WIDTH,,HEIGHT
+;;;     	words[0 : width*height-1]
+;;;     WIDTH is the number of 36 bit words per scan line. HEIGHT is
+;;;     the number of scan lines.  There is no position information.
+;;;     The words following are the data. Scanning goes across then
+;;;     down. Only the high 32 bits of the word is used for data.
+
+(declare (special in-file pb pb-size-x)
+	 (*expr clear-page-buffer output-page-buffer))
+
+(defun process-prspg-file (commands)
+       commands
+       (setq in-file (open in-file '(in dsk fixnum)))
+       (eoffn in-file (function (lambda (file flag) file flag -1)))
+       (do ((width--height (in in-file) (in in-file))
+	    (width 0)
+	    (height 0)
+	    (remaining (1- (car (syscall 1 'fillen in-file)))
+		       (- remaining (* width height) 1)))
+	   ((progn (setq width (lsh width--height -18.)
+			 height (boole 1 width--height #o777777))
+		   (or (zerop width--height)
+		       (= width--height -1)
+		       (zerop (* width height))
+		       (> (* width height) remaining))))
+	   (declare (fixnum width--height width height remaining))
+	   (clear-page-buffer)
+	   (do y 0 (1+ y) (= y height)
+	       (do ((over (// y 16.))
+		    (mask (lsh #.(lsh #o600000 18.) (* (\ y 16.) -2)))
+		    (x width (1- x))
+		    (down (1- pb-size-x) (- down 64.)))
+		   ((zerop x))
+		   (do ((in-word (in in-file) (lsh in-word 1))
+			(bits 32. (1- bits))
+			(down down (- down 2))
+			(word 0))
+		       ((or (zerop bits) (zerop in-word)))
+		       (setq word (* mask (lsh in-word -35.)))
+		       (store (arraycall fixnum pb over down)
+			      (boole 7 (arraycall fixnum pb over down) word))
+		       (store (arraycall fixnum pb over (1- down))
+			      (boole 7 (arraycall fixnum pb over (1- down)) word)))))
+	   (output-page-buffer)))
+
+
+;; Local Modes:
+;; Mode: LISP
+;; Comment Col: 40
+;; Compile Command: :complr glpspl;_1 î
+;; END:

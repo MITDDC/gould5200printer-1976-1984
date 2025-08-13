@@ -1,0 +1,758 @@
+
+;;;	Graphics spooler for a matrix printer (Gould 5200)
+
+(Comment Main Toplevel Spooling Routines)
+
+;;; See the INIT-DUMP function for comment on how to dump this system
+
+(eval-when (eval compile) (load "dsk:lisp;umlmac fasl"))
+
+;;; Macro to check for the existance of spool request files
+;;; (keep it at run time for debugging)
+
+(defmacro queue-file-p ()
+   '(setq queue-file-list
+	  (allfiles '(((dsk /.glpr/.) |    Q1|)
+		      ((dsk /.glpr/.) |    Q2|)
+		      ((dsk /.glpr/.) |    Q3|)))))
+
+(declare (special queue-file-list gould-connection pb pb-size-x pb-size-y))
+
+(setq pb-size-y 66. pb-size-x 1700. pb nil)	;pb is nil at dump time
+
+;;;    Top level spooling function
+(defun spooler-toplevel nil
+   (let ((ibase 10.) (base 10.) (*nopoint t))		;set only at run time
+	(sstatus cli nil)				;disable for now
+	(do  nil (nil)
+	     (*catch  'spooler-toplevel
+		      (if (null (queue-file-p)) (wait-for-queue-file)
+			  (errset (process-queue-request
+				   (car (sort queue-file-list (function queue-sort))))
+				  nil))))))
+
+(defun queue-sort (item1 item2)
+   (or (alphalessp (cadr item1) (cadr item2))
+       (< (readlist (exploden (caddr item1)))
+	  (readlist (exploden (caddr item2))))))
+
+;;;    Process a request specified in JCL
+(defun jcl-spool ()
+   (unless (status jcl) (valret ": Must use JCL with GSPOOL/î:kill/î"))
+   (let ((tty-return))
+	(valret (format nil ":GLP ~A//priority/î:JOB ~A/î:proced /î"
+			(maknam (nreverse (cdr (nreverse (status jcl)))))
+			(status jname))))
+   (lock-pages)
+   (*catch 'spooler-toplevel
+	   (if (null (errset (process-queue-request '((dsk /.glpr/.) |    Q1| 0))))
+	       (print "GSPOOL Failed due to an internal error.")))
+   (valret ":kill "))
+
+;;;   Wait for a queue request file to appear on .GLPR.;
+(declare (special dirhng-flag pages-locked)
+	 (*expr font-init))				;in GLPSPL;GLPFNT >
+
+(defun wait-for-queue-file ()
+   (nointerrupt t)					;avoid timing screw
+   (let ((dirhng-file (open "DIRHNG:.GLPR.;" '(in)))
+	 (dirhng-flag))
+	(eoffn dirhng-file '(lambda (x) (setq dirhng-flag t)))
+	(unless (queue-file-p)				;one last chance...
+		(nointerrupt nil)			;let interrupts go
+		(and pb (*rearray pb 'fixnum 1 1))	;get rid of the array
+		(if gould-connection (gould-disconnect))
+		(set-idle-flag t)
+		(font-init)				;clear out font tables
+		(gc)					;clean up the world
+		(if pages-locked (unlock-pages))	; lets be sociable
+		(dirhng-wait))				; hang until non-nil
+	(close dirhng-file)))
+
+;;; Wait for dirhng-flag to become non-nil
+(lap	dirhng-wait subr)
+	(skipn 0 @(special dirhng-flag))
+	(*hang 0)
+	(popj p)
+()
+
+(Comment Process Queue Request)
+
+;;;  Process a queue request
+(declare (special background copies default queue-file in-file output delete
+		  notify file-command commands scan-file gould-connection
+		  status nocut sender machine kset highre)
+	 (*lexpr user-error)
+	 (*expr process-xgp-file process-lpt-file process-ards-file
+		process-tek-file process-dplt-file process-image-file
+		process-its-file process-prspg-file
+		initialize-for-versatec output-versatec-scan-file))
+
+(defun process-queue-request (qfile)
+  (unless (errset (set-flags (read-queue-request qfile)) nil)
+	  (errset (renamef qfile '((dsk /.glpr/.) badqrq >)) nil)	;error
+	  (*throw 'spooler-toplevel nil))		;so punt
+  (setq pb (or pb (create-page-buffer-array pb-size-y pb-size-x)))
+  (unwind-protect
+   (progn
+    (unless file-command (setq file-command (determine-file-type in-file)))
+    (setq in-file (mergef in-file default))
+    (unless (probef in-file)
+	    (*throw 'spooler-toplevel nil))
+    (if notify (notify-user notify))
+    (sstatus cli t)					;allow CLI ints now
+    (do ((copies (min 5 copies) (1- copies)))
+	((= 0 copies))
+      (unless (errset
+	       (progn
+		(caseq output				; open a path to some device
+		  (xgp (initialize-for-xgp))
+		  (gould (initialize-for-gould))
+		  (versatec (initialize-for-versatec))
+		  ((pfc b38) (initialize-for-v80)))
+		(caseq file-command
+		  ((xgp sample print)  (process-xgp-file commands))
+		  ((hw lpt)  (process-lpt-file commands))
+		  (ards (process-ards-file commands))
+		  (tek  (process-tek-file commands))
+		  (dplt (process-dplt-file commands))
+		  (image (process-image-file commands))
+		  (prspg (process-prspg-file commands))
+		  (its  (process-its-file commands))
+		  (list					;kludge this case
+		   (if (assq 'fortran commands)
+		       (process-lpt-file commands)
+		       (process-xgp-file commands)))))
+	       nil)
+	      (spooler-error)))
+    (caseq output
+      (xgp (xgp-queue))
+      ((gld pfc) (v80-queue))
+      (versatec (end-for-versatec)))
+    (if delete (errset (deletef in-file) nil)))
+   (sstatus cli nil)					;turn off CLI ints.
+   (if (probef "dsk:.glpr.;done queue")
+       (errset (deletef "dsk:.glpr.;done queue")))
+   (errset (renamef qfile "dsk:.glpr.;done queue"))
+   (if (and (filep scan-file) (status filemode scan-file))
+       (errset (progn (deletef scan-file) (close scan-file)) nil))
+   (errset (close in-file) nil)
+   (setq sender nil queue-file nil scan-file nil)))
+
+(defun determine-file-type (file)
+   (setq file (car (errset (open file '(in fixnum dsk)) nil)))
+   (prog2 nil
+    (let ((word (in file)))
+	 (cond ((null file) 'LPT)
+	       ((= 0 (boole 1 377777777740 word)) 'DPLT)
+	       ((not (= 0 (boole 1 1 word))) 'IMAGE)
+	       (T (setq file (open file '(in image dsk)))
+		  (let ((ch (tyi file)))
+		       (cond ((= 35 ch) 'ARDS)
+			     ((= 33 ch) 'TEK)
+			     (kset 'XGP)
+			     ((and (= 73 ch)
+				   (memq (read file)
+					 '(skip reset kset lftmar topmar botmar vsp lsp
+					   scale rotate ksubset size squish)))
+			      'XGP)
+			     (T 'LPT))))))
+    (errset (close file) nil)))
+
+(declare (special qreadtable))
+
+(eval-when (eval compile)				;macros for reading
+     (defmacro qread () '(read queue-file))
+     (defmacro qreadch () '(readch queue-file))
+     (defmacro qreadline () '(prog2 nil (readline queue-file)
+				    (readch queue-file))))
+
+;;; Special read syntax
+(let ((readtable (setq qreadtable (array nil readtable))))
+     (setsyntax '/, '| | nil))
+
+(defun read-queue-request (qfile)
+   (setq queue-file qfile)
+   (let ((cmd-list) (queue-file (open queue-file '(in ascii dsk)))
+	 (readtable qreadtable))
+	(do ((cmd) (eol-flag nil nil))
+	    ((not (= #/; (tyipeek nil queue-file))))
+	    (qreadch)					;gobble /;
+	    (setq cmd
+		  (caseq (setq cmd (qread))	; skip space
+			 (priori nil)	; ignore this
+			 ((lftmar botmar topmar size width x0 y0 rotate output
+			   lsp vsp skip copies nlines scale thick)
+			  `(,cmd . ,(qread)))		;read a number
+			 (backgr `(background .,(qread)))
+			 ((print lpt dplt ards tek image prspg scan its list sample hw)
+			  `(file-command . ,cmd))	;file command
+			 (notify
+			  (setq eol-flag t
+				machine (qread)
+				sender (qread))
+			  (qreadch)			;gobble a space
+			  `(notify . ,(qreadline)))
+			 ((default header status)	;string args
+			  (setq eol-flag t)
+			  (qreadch)			;gobble space
+			  `(,cmd . ,(qreadline)))
+			 (kill (syscall 0 'LOGOUT 0))	;kill this job
+			 (txtcmd
+			  (setq queue-file
+				(open  (prog2 nil (qreadline) (close queue-file))
+				       '(in ascii dsk))
+				eol-flag t)
+			  nil)
+			 (kset (setq eol-flag t)
+			       `(kset .,(parse-kset-specs (qreadline))))
+			 (ksubset `(ksubset ,(qread) ,(qread) ,(qread)
+					     ,(qread) ,(qread)))
+			 (fortra `(fortran . t))
+			 (wrapar `(wraparound . t))
+			 (nohead `(noheading . t))
+			 (^contr `(^controls . t))
+			 ((nocut squish ffcut delete highre)
+			  `(,cmd . t))
+			 (autcut '(nocut . t))		;translations
+			 (trunca `(wraparound . nil))
+			 (t (error))))			;unknown, punt
+	    (when cmd (setq cmd-list `(,cmd . ,cmd-list)))
+	    (unless eol-flag (qreadline)))		; skip to next line
+	(when (= #\CR (tyipeek nil queue-file))		;gobble blank line
+	      (qreadline))
+	(setq cmd-list `((in-file . ,(qreadline)) . ,cmd-list))
+	(close queue-file)
+	(sortcar cmd-list 'alphalessp)))
+
+;;; This is also called from GLPSPL;XGP >
+
+(defun parse-kset-specs (spec)
+    (do ((l (exploden spec) (cdr l))
+	 (sub-list) (kset-list))
+	((null l)
+	 (nreverse (cons (implode (nreverse sub-list)) kset-list)))
+	(if (= #/, (car l))			;if its a comma
+	    (setq kset-list			;cons item onto list
+		  (cons (implode (nreverse sub-list)) kset-list)
+		  sub-list nil)
+	    (setq sub-list (cons (car l) sub-list)))))
+
+(setq toplevel-var-list
+      '((background . 0) (copies . 1) (default) (delete)
+        (file-command) (in-file) (kset) (nocut) (notify) (output . gould) 
+	(status) (highre)))
+
+;;; Set the flags which are initialized at toplevel and return a list of the rest.
+
+(declare (special toplevel-var-list))
+
+(defun set-flags (cl)
+   (do ((l toplevel-var-list (cdr l)) (item))
+       ((null l) (setq commands cl))			;save the remainder
+       (setq item (assq (caar l) cl))
+       (if item (setq cl (delq item cl))
+	   (setq item (car l)))
+       (set (car item) (cdr item))))
+
+;;; Clean up after a user or spooler error
+
+(defun spooler-error ()
+   (cond (in-file
+	  (user-error "Error encountered while processing:  "
+		      (namestring in-file))
+	  (close in-file))
+	 (t (user-error "Spooler error.  Get help!")))
+   (*throw 'spooler-toplevel nil))
+
+;;; Main Page Buffer Output Routine
+
+(declare (*expr %send-page-image))
+
+(defun output-page-buffer ()
+   (caseq output
+	  (xgp (output-xgp-scan-file))
+	  (gould (output-to-gould))
+	  (versatec (output-versatec-scan-file))
+	  ((pfc b38) (output-xgp-scan-file)))
+   (set-filepos-info))
+
+
+(Comment Gould Output and Connect Routines)
+(declare (special chaos-internal-pkt-buffer gould-is-losing)
+	 (*expr %chaos-open-channels %chaos-close-channels
+		%chaos-request-connection %chaos-eof
+		%chaos-pktiot))
+
+(eval-when (eval compile)
+     (setq %cscls 0 %csrfs 3 %csopn 4 %cslos 5 %csinc 6	;conn. states
+	   gould-host 500 gould-timeout 60. gould-repair-time 30.))
+
+(defun initialize-for-gould ()
+   (when gould-is-losing
+	 (user-error "The Gould is down semi-permanently.
+Please resubmit your request after you hear that the Gould is back up.
+")
+	 (*throw 'spooler-toplevel nil))
+   (setq pb-size-y 66. pb-size-x 1700.)
+   (reconfigure-page-buffer-array 66. 1700.)
+   (unless gould-connection (gould-connect)))
+
+(defun output-to-gould ()
+   (do nil
+       ((*catch 'chaos-pktiot-error			;IOC errors get caught here
+		(%send-page-image gould-connection pb (not nocut))))
+       (set-error-msg (setq notify (get-gould-error-msg)))
+       (notify-user notify)
+       (gould-disconnect) (gould-connect)))
+
+;;; see the file L;LCHNSP > for the %chaos routines
+
+(defun gould-connect nil 
+       (if pages-locked (unlock-pages))	; lets be sociable
+       (do ((state 0))
+	   (NIL)
+	   (setq state
+		 (*catch 'chaos-pktiot-error  ;catch IOC errors
+			 (gould-open)
+			 (%chaos-request-connection
+			     gould-connection
+			     #.gould-host
+			     'GOULD
+			     T				;RFC rather than LSN
+			     #.gould-timeout)))
+	   (cond ((= #.%csopn state)
+		  (clear-error-msg)
+		  (return nil))
+		 (t (set-error-msg (get-gould-error-msg))
+		    (sleep #.gould-repair-time))))
+       (unless pages-locked (lock-pages)))
+
+(defun gould-open nil
+    (when gould-connection (%chaos-close-channels gould-connection))
+    (setq gould-connection (%chaos-open-channels 2)))	;rarely receive stuff
+
+(defun gould-disconnect nil			   ;in-elegant close, but...
+       (when gould-connection
+	     (*catch 'chaos-pktiot-error	   ;in case %chaos-eof bombs
+		     (%chaos-eof gould-connection))
+	   (%chaos-close-channels gould-connection))
+       (if pages-locked (unlock-pages))	; lets be sociable
+       (setq gould-connection nil))
+
+;;; Read and stringify a message from the Gould about why its losing
+
+(defun get-gould-error-msg ()
+   (let ((count (lsh (caddr (syscall 3 'whyint (car gould-connection))) -18.))
+	 (ary chaos-internal-pkt-buffer))
+	(cond ((and count (> count 0)
+		    (*catch 'chaos-pktiot-error
+			    (%chaos-pktiot (car gould-connection) ary)))
+	       (do ((l nil (nconc (explodew (arraycall fixnum ary i)) l))
+		    (i 4 (1+ i)))
+		   ((= 0 (arraycall fixnum ary i))
+		    (do ((l l (cdr l)))
+			((not (= 0 (car l))) (maknam (nreverse l)))))))
+	      (t "Cause Unknown."))))
+
+;;; V80 spooler output routines
+
+(defun initialize-for-v80 ()
+  (if gould-connection (gould-disconnect))
+  (setq pb-size-y 52. pb-size-x 2112.)
+  (reconfigure-page-buffer-array pb-size-y pb-size-x)
+  (setq scan-file (caseq output
+		    (gld "dsk:.glpr.;-gldsc >")
+		    (pfc "dsk:.glpr.;-pfcsc >")))
+  (unless pages-locked (lock-pages)))
+
+(defun v80-queue ()
+  (do () ((not (errset (renamef "dsk:.glpr.;-gldsc <"
+				"dsk:.glpr.;gldscn >")
+		       nil))))
+  (do () ((not (errset (renamef "dsk:.glpr.;-pfcsc <"
+				"dsk:.glpr.;pfcscn >")
+		       nil))))
+  (errset (progn (close (open "dsk:.glpr.;-kick- 1" '(out)))
+		 (deletef "dsk:.glpr.;-kick- 1")))
+  (setq scan-file nil))
+
+
+;;; XGP Output Routines
+
+(defun initialize-for-xgp ()
+   (if gould-connection (gould-disconnect))
+   (setq pb-size-y 52. pb-size-x 2112.)
+   (reconfigure-page-buffer-array 52. 2112.)
+   (setq scan-file "dsk:.glpr.;> scn")
+   (unless pages-locked (lock-pages)))
+
+(defun xgp-queue ()
+   (if pages-locked (unlock-pages))	; lets be sociable
+   (prog (queue-file)
+    (unless (probef "ai:.xgpr.;.file. (dir)") 	; is AI up?
+	    (user-error 
+ "Warning:  Your XGP output has not been submitted to the XGP queue
+	because AI is unavailable via the AI: device.  The SCN files for your
+	request have been left on DSK:.GLPR.;.  To get your files
+	printed you must copy them to the AI machine and queue them
+	when AI: is available.   See the XGP node under :INFO GLP
+	for more details.
+")
+	    (return nil))
+    (unless (errset
+	     (progn
+	      (do ((l (sort (allfiles '( ((dsk /.glpr/.) * SCN)))
+			    (function queue-sort))
+		      (cdr l))
+		   (findex 1.) (ai-file))
+		  ((null l))
+		  (do nil
+		      ((> findex 100.))
+		      (setq ai-file `((ai /.glpr/.) ,findex scn))
+		      (if (probef ai-file) (setq findex (1+ findex))
+			  (return nil)))
+		  (copy-file (car l) ai-file)
+		  (deletef (car l)))
+	      (let* ((xgpq-file (open "ai:.xgpr.;_queue output" '(out)))
+		     (base 10.) (*nopoint t)
+		     ((hours mins secs) (status daytime))
+		     (time-string (format nil "~A:~A:~A" hours mins secs))
+		     ((year month day) (status date))
+		     (date-string (format nil "~A//~A//~A" month day year)))
+		    (format xgpq-file
+";Status ~A MC O ~A ~A ?	(GLP) AI:.GLPR.;* SCN
+;Notify ~A,~A ~A
+;Default AI:.GLPR.;
+;Delete
+;Scan
+
+AI:.GLPR.;* SCN
+"
+                            sender time-string date-string machine sender notify)
+		   (close xgpq-file)
+		   (renamef xgpq-file '(|    Q1| >))))
+	     nil)
+	 (user-error
+ "Error occurred while trying to queue your output for the XGP (probably
+  due to AI going down or AI: device lossage).
+  You must queue your output manually when AI: is revived.
+  See the XGP node under :INFO GLP for more details.
+"))))
+
+(defun copy-file (from to)
+   (setq from (open from '(in fixnum))
+	 to   (open to   '(out fixnum)))
+   (do ((i (lengthf from) (- i 500))
+	(copy (array nil fixnum 500)))
+       ((not (> i 0)))
+       (cond ((< i 500) (*rearray copy 'fixnum i)))
+       (fillarray copy from)
+       (fillarray to copy))
+   (close from)
+   (close to))
+
+;;; XGP SCAN file Output
+;;; (should be written in MIDAS)
+
+(declare (special pb-size-x pb-size-y)
+	 (fixnum lineno width bytes count xormask word colacc i num dum m wordacc
+		 oword shift mask1 mask2 y y1 pb-size-y pb-size-x byteptr xgp-width
+		 last-line wa-size (circ fixnum))
+	 (*expr circ)
+	 (array* (fixnum working-array 1.) (fixnum pb 2)))
+
+(eval-when (eval compile) (SETQ XGP-SCAN-START 0))
+
+(OR (GET 'CIRC 'SUBR) (DEFPROP CIRC (glpfnt FASL DSK GLPSPL) AUTOLOAD))
+; CHECK FIX UP ARRAY BEFORE FILLARRAYS (0'TH ELEMENT, LENGTH, COUNT, ETC)
+; CHECK BYTE-PTR.  SHOULD USE ILDB FUNCTION SOMEDAY.
+
+(DEFUN output-XGP-SCAN-file () 
+       (setq scan-file (car (errset (open scan-file '(out fixnum block)) nil)))
+       (unless (filep scan-file) (*throw 'spooler-toplevel nil))
+       (ARRAY WORKING-ARRAY FIXNUM 1.)
+       (DO ((LINENO #.XGP-SCAN-START (1+ LINENO))
+	    (WA-SIZE (+ pb-size-y 3.))  ; one extra for idpb header
+	    (WIDTH pb-size-y pb-size-y) (COUNT 6. 6.) (BYTES 0.) (WORD 0.)
+	    (IMAGE NIL NIL) (XORMASK (LSH -1. -4.)) (MASK1 (+ 255._28. 255._12.))
+	    (MASK2 (+ 255._20. 255._4.)) (WORKING-ARRAY (GET 'WORKING-ARRAY 'ARRAY))
+	    (XGP-WIDTH 54.))
+	   ((= LINENO pb-size-x)
+	    (OUT SCAN-FILE (LSH (+ 2._16. 1._15. (* 192. 11.)) 4.))
+	    (OUT SCAN-FILE 0))
+	   (*REARRAY 'WORKING-ARRAY 'FIXNUM WA-SIZE)
+	   (STORE (WORKING-ARRAY 0) #.(+ 20._30. 8._24. 8._18. 2))
+	   (STORE (WORKING-ARRAY 2) 0)
+	   (SETQ BYTES (* 4. (1+ WIDTH)))
+	   (DO ((I (1- WIDTH) (1- I)))
+	       ((OR (< I 0.) (NOT (= (arraycall fixnum pb I LINENO) 0.))) (SETQ WIDTH (1+ I))))
+	   (DO ((I 0. (1+ I)) (COLACC 0.) (COLOUR NIL))    ;NIL=WHITE T=BLACK
+	       ((= I WIDTH)
+		(COND ((= COUNT 6.) (SETQ COUNT 0.))
+		      (T (IDPB 0 WORKING-ARRAY) (IDPB 0 WORKING-ARRAY)
+			 (IDPB 0 WORKING-ARRAY) (IDPB 1 WORKING-ARRAY)
+			 (SETQ COUNT (+ COUNT 4.))
+			 (COND ((NOT (= (BOOLE 1. COUNT 3.) 0.))
+				(IDPB 0 WORKING-ARRAY) (IDPB 0 WORKING-ARRAY)
+				(SETQ COUNT (+ COUNT 2.))))
+			 (SETQ COUNT (// COUNT 4.)))))
+	       (SETQ WORD (LSH (arraycall fixnum pb I LINENO) -4.))
+	       (COND (COLOUR (SETQ WORD (BOOLE 6. WORD XORMASK))))
+	       (DO ((WORDACC 0.) (NUM 0.) (DUM 0.) (EXITP))
+		   (NIL)
+		   (SETQ NUM (- 32. (HAULONG WORD))
+			 WORDACC (+ WORDACC NUM)
+			 COLACC (+ COLACC NUM))
+		   (COND ((> WORDACC 31.)
+			  (SETQ COLACC (- COLACC WORDACC -32.))
+			  (COND ((AND COLOUR (= (1+ I) WIDTH)) (SETQ EXITP T))
+				(T (RETURN NIL)))))
+		   (SETQ DUM (1- (* 2. (// (+ 254. COLACC) 255.))))
+		   (COND ((NOT (< (+ COUNT DUM) BYTES)) (SETQ IMAGE T) (RETURN NIL)))
+		   (SETQ DUM (// DUM 2.))
+		   (DO ((M 0. (1+ M))) ((= M DUM))
+		       (IDPB 255. WORKING-ARRAY) (IDPB 0 WORKING-ARRAY)
+		       (SETQ COLACC (- COLACC 255.) COUNT (+ COUNT 2.)))
+		   (IDPB COLACC WORKING-ARRAY) (SETQ COUNT (1+ COUNT))
+		   (AND EXITP (RETURN NIL))
+		   (SETQ WORD (BOOLE 6. (LSH WORD NUM) XORMASK) 
+			 COLACC 0. COLOUR (NOT COLOUR)))
+	       (AND IMAGE (RETURN NIL)))
+	   (COND (IMAGE (DO ((I 0. (1+ I)) (WORDACC 2._4. WORD) (WORD)) ((> I WIDTH))
+			    (SETQ WORD (COND ((= I WIDTH) 0.)
+					     (T (CIRC (arraycall fixnum pb I LINENO)))))
+			    (STORE (WORKING-ARRAY (1+ I))
+				   (BOOLE 6. (LSH WORDACC 16.)
+					  (LSH (LSH WORD -20.) 4.)))
+			    ;(STORE (WORKING-ARRAY (+ I 3)) (CIRC (arraycall fixnum pb I LINENO)))
+)
+			(SETQ COUNT (+ WIDTH 1.) WIDTH (+ pb-size-y 2.))
+			(DO ((I COUNT (1+ I))) ((= I WIDTH))
+			    (STORE (WORKING-ARRAY (1+ I)) 0.))
+			(SETQ COUNT XGP-WIDTH))
+		 (T (SETQ WIDTH COUNT)
+		    (DO ((I 0. (1+ I))) ((= I WIDTH))
+			(STORE (WORKING-ARRAY I) (WORKING-ARRAY (1+ I))))))
+	   (COND ((NOT (= COUNT 0.))
+		  (STORE (WORKING-ARRAY 0.)
+			 (+ (LSH COUNT 21.) (LSH LINENO 4.)))
+		  (DO ((I 1. (1+ I))) ((= I WIDTH))
+		      (SETQ WORD (WORKING-ARRAY I))
+		      (STORE (WORKING-ARRAY I)
+			     (+ (LSH (BOOLE 1. WORD MASK1) -8.)
+				(LSH (BOOLE 1. WORD MASK2) 8.))))
+		  (*REARRAY 'WORKING-ARRAY 'FIXNUM WIDTH)
+		  (FILLARRAY SCAN-FILE 'WORKING-ARRAY)
+		  (COND (IMAGE (DO ((I WIDTH (1+ I))) ((= I XGP-WIDTH))
+				   (OUT SCAN-FILE 0.)))))))
+       (*REARRAY 'WORKING-ARRAY 'FIXNUM 1.)
+       (close scan-file))
+
+(LAP	IDPB SUBR)
+(ARGS	IDPB (NIL . 2))
+	(PUSH P (% 0 0 FIX1))	; NCALLABLE
+	(MOVE TT 0 A)
+	(HRRZ D 1 B)
+	(IDPB TT 0 D)		; DEPOSIT THE BYTE
+	(POPJ P)
+()
+
+;;; Routines for versatec.
+(defprop initialize-for-versatec (versy fasl dsk glpspl) autoload)
+
+;;; Send an error message to the user
+(declare (special msgfile))
+
+(defun msgprinc (x) (princ x msgfile))
+
+(defun user-error n 
+   (let ((msgfile   ;; try to use CLI device if possilbe, else MAIL
+	  (car (errset (open `((cli) ,sender hactrn) '(out ascii)) nil)))
+	 (xsender (do ((l (nreverse (exploden sender)) (cdr l)))
+		      ((null l) sender)
+		      (if (or (> (car l) #/9) (< (car l) #/0))
+			  (return (implode (reverse l)))))))
+	(if msgfile (mapc (function msgprinc) (listify n))
+	    (setq msgfile (open "dsk:.mail.;mail >" '(out ascii)))
+	    (format msgfile
+"FROM-PROGRAM:~A
+AUTHOR:~A
+FROM-UNAME: BUG-GLP
+TO:S/"~A@~A
+TEXT;-1
+~A
+"                   (status jname) (status uname) xsender machine
+	            (apply #'string-append (listify n))))
+	(terpri msgfile)
+	(if msgfile (close msgfile))))
+
+(defun notify-user (msg)
+   (when msg
+	 (let ((msgfile
+		(car (errset (open `((cli) ,sender hactrn) '(out ascii)) nil))))
+	      (when msgfile
+		    (msgprinc msg)
+		    (terpri msgfile)
+		    (close msgfile)))))
+
+;;; CLI message handler for aborting the current listing
+
+(setq cli-message 'cli-message-handler)
+
+(defun cli-message-handler (file)
+   (setq file (open "cla:" '(cla block fixnum)))
+   (if (and queue-file sender)
+       (notify-user (format nil "Your listing was aborted by ~A"
+			    (cadr (truename file)))))
+   (close file)
+   (set-abort-flag)
+   (*throw 'spooler-toplevel nil))
+
+(sstatus feature noldmsg)		; get rid of crufty msgs
+
+(setq gc-overflow '(lambda (x) x nil))	; how else to turn this off?
+
+;;; Initialize variables
+(setq gould-connection nil pages-locked nil sender nil queue-file nil
+      scan-file nil gould-is-losing nil)
+
+;;;	Autoload properties for external files
+(mapc '(lambda (type)
+	(cond ((not (getl type '(subr expr)))
+	       (putprop (implode
+			 (append
+			  (exploden 'process-)
+			  (exploden type)
+			  (exploden '-file)))
+			`((dsk glpspl) ,type fasl)
+			'autoload))))
+      '(xgp lpt ards dplt prspg tek its))
+
+;;; The status block read by GLP^F is defined as follows:
+;;; 60:  IN-FILE channel number
+;;; 61:  Version number of GLPSPL
+;;; 62:  number of Q1 files to be printed before Q2 files
+;;; 63:  Special forms loaded (not used)
+;;; 64:  FN2 of the file currently being printed
+;;; 65:  Abort flag
+;;; 66:  -1 if in maintenance mode, otherwise 0
+;;; 67:  -1 if idle
+;;; 70:  file size (-1 or size in words)
+;;; 71:  file pointer
+;;; 72:  pointer to current GOULD error message
+
+(deposit 61 #.(car (pnget (caddr (truename infile)) 6)))	;version number
+(deposit 65 0)			; not in an abort state
+(deposit 67 -1)			; start off idle
+(deposit 70 -1)			; no file size
+(deposit 72 0)			; no error message
+
+(defun set-idle-flag (flag)
+   (deposit 67 (if flag (prog2 (deposit 64 0) -1) 0)))
+
+(defun set-abort-flag () (deposit 65 -1))
+
+(defun set-file-info ()
+   (unless (filep in-file) (error))
+   (set-channel-number)
+   (deposit 62 (length (allfiles '(((dsk /.glpr/.) |    Q1|)))))
+   (deposit 64 (let (((() fn1 fn2) queue-file))
+		    (if (numberp fn2) (setq fn2 (maknam (exploden fn2))))
+		    (rot (boole 7 (boole 1 77 (car (pnget fn1 6)))
+				(car (pnget fn2 6)))
+			 -6)))
+   (deposit 65 0)		;not aborting now
+   (deposit 70 (or (caddar (directory (list (truename in-file)) '(words))) -1))
+   (deposit 71 0)		;filepos at the beginning
+   (set-idle-flag nil))		;no longer idle
+
+(lap	set-channel-number subr)	;LISP doesn't let you access filearray
+	(move t (special in-file))	;get channel num from filearray
+	(movei tt 11)			; F.CHAN
+	(move t @ 1 t)			; @TTSAR(T)
+	(movem t 60)			;store in location 60
+	(popj p)
+()
+
+(defun set-filepos-info ()
+   (let* ((filemode  (status filemode in-file))
+	  (filepos (cond ((null filemode) -1)
+			 ((memq 'fixnum (car filemode))
+			  (filepos in-file))
+			 (t (// (+ 5 (filepos in-file)) 5)))))
+	 (deposit 71 filepos)))
+
+(lap	set-error-msg subr)
+	(movei b '7)
+	(call 2 (function pnget))
+	(movei t buffer)
+	(movem t 72)
+loop	(hlrz tt 0 a)	    ;car of a
+	(move tt 0 tt)
+	(movem tt 0 t)
+	(aoj t)
+	(hrrz a 0 a)
+	(jumpn a loop)
+	(popj p)
+buffer	(block 20.)
+()
+
+(defun clear-error-msg () (deposit 72 0))
+
+;;; use this function to dump out a new GLPSPL;TS GLPSLP
+;;; The usual way to dump this package is to do:
+;;; GLPSPL
+;;; :LISP
+;;; N
+;;; (FASLOAD GLPSPL FASL DSK GLPSPL)
+;;; Y
+
+(defun init-dump nil
+       (setq ^w t msgfiles nil)				;no tty, no typeout
+       (*rset nil) (nouuo nil)
+       (noret t) (GC)					;gear up for speed
+       (sstatus toplevel '(spooler-toplevel))
+       (sstatus flush t)				;will be the default
+       (suspend ":kill " '((dsk glpspl) ts glpspl))
+       (cond ((eq 'gspool (status jname)) (jcl-spool)))
+       (cond ((= 0 (boole 1 1_30.
+			  (car (syscall 1 'USRVAR -1
+					(car (pnget 'OPTION 6))))))
+	      (set-uname))			;if autostart, ok
+	     (t (valret "7") (sleep 1) (set-uname))))	;else, disown
+
+(eval-when (eval load)
+       (terpri)
+       (unless (status feature gould-spooler)
+	       (fasload lchnsp fasl dsk lisp)
+	       (fasload sort fasl dsk lisp)
+	       (fasload allfil fasl dsk lisp)
+	       (fasload glppko fasl dsk glpspl)
+	       (fasload glpspt fasl dsk glpspl)
+	       (fasload glpdrw fasl dsk glpspl)
+	       (fasload glpfnt fasl dsk glpspl))
+       (sstatus feature gould-spooler)
+       (terpri)
+       (setq flag nil)
+       (princ "Dump TS GLPSPL (Y or N)? ")
+       (setq flag  (implode (list (tyi t)))))
+       (cond ((member flag '(/y Y)) 
+	      (Terpri)
+	      (princ "Don't Forget to put entry in LISP;LOCK > for LISP Version: ")
+	      (princ (status lispv)) (terpri)
+	      (sstatus toplevel '(init-dump))
+	      (princ "PDUMPing a new Gould Spooler"))
+	     (t (setq errset '(lambda(x) (break t t)))	   ;for debugging
+		(*rset t) (nouuo t)
+		(fasload debug fasl dsk liblsp)
+		(fasload step fasl dsk liblsp)
+		(terpri) (princ "LISP with GLPSPL loaded")))
+       (terpri))
+(terpri)
+
+
+;; Local Modes:
+;; Mode: LISP
+;; Comment Col: 40
+;; END:

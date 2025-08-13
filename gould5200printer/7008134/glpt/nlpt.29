@@ -1,0 +1,157 @@
+(Comment spooler for lpt style printing of ascii files)
+;;; todo:
+;;; skip command
+;;; page size, margins, etc, cut control
+;;; variable width spacing???
+;;; user heading/title text
+
+(declare (special in-file wrap-around lpt-commands id line-count overrun page-number
+		  listing-mode fortran-mode controls-flag heading-text
+		  page-filepos textarray gould-connection)
+	 (*expr %send-character-line gould-connect gould-disconnect
+		defheadr textsetup))
+
+(include |dsk:jlk;lspmac >|)
+
+(declare (eval (read)))
+(setq bottom-margin 2 top-margin 5 dollar 44 space 40 caret 136 cr 15 lf 12 ff 14
+      tab 11 altmode 33 control-c 3 page-size 69. line-size 132.)
+
+(defun lpt-print (file)
+   (lpt-init)
+   (let ((in-file (open file '(in dsk ascii)))
+	 (line-count 0)
+	 (id 0)
+	 (overrun)
+	 (wordc))
+	(setq wordc (caddar (directory (list (truename in-file)) '(words))))
+	(if (and listing-mode (null heading-text))
+	    (setq heading-text (defheadr (truename in-file))))
+	(new-page)					;start on a fresh page
+	(do ((ch (tyi in-file) (tyi in-file)))		;main stream
+	    ((= ch -1))					;finished if EOF
+	    (declare (fixnum ch))
+	    (cond ((and (or (= ch #control-c) (= ch #ff))	;^C or ^L in last wrd
+			(not (> wordc (1+ (// (filepos in-file) 5))))))
+		  ((= ch #ff) (lpt-formfeed))		;^L
+		  ((= ch #lf) (lpt-linefeed))		;^J
+		  ((or (= ch #cr) overrun))		;ignore
+		  ((= ch #tab) (lpt-tab))		;^M or truncation
+		  ((and controls-flag (< ch 40))	;other control characters
+		   (cond ((= #altmode ch) (put-char #dollar))
+			 (t (put-char #caret)
+			    (put-char (+ 100 ch)))))
+		  (t (put-char ch))))			;ordinary printing chars
+	(if (> line-count #top-margin)			;finish off the page
+	    (do nil ((= line-count #page-size)) (finish-line)))
+	(close in-file)))				;close the input file
+
+(defun lpt-init ()
+   (setq listing-mode t				;defaults
+	 fortran-mode nil
+	 controls-flag t
+	 wrap-around t
+	 heading-text nil
+	 page-number 1
+	 page-filepos 0)
+   (do ((l lpt-commands (cdr l)) (flag-value t t))	;process LPT commands
+       ((null l))
+       tag
+       (cond ((null (car l)))
+	     ((member (caar l) '(fortran f ftn fort for))
+	      (setq fortran-mode flag-value
+		    listing-mode (not flag-value)))
+	     ((member (caar l) '(l list))
+	      (setq listing-mode flag-value))
+	     ((member (caar l) '(n nolist))
+	      (setq listing-mode (not flag-value)))
+	     ((member (caar l) '(t trunc truncate tr /!))
+	      (setq wrap-around (not flag-value)))
+	     ((member (caar l) '(^ c cnt ctrl control controls ctrls ctr cntrls))
+	      (setq controls-flag flag-value))
+	     ((member (caar l) '(h head header heading text title))
+	      (setq heading-text (cadar l))
+	      (rplacd (car l) nil))
+	     ((member (caar l) '(no -))
+	      (setq flag-value nil)
+	      (rplaca l (cdar l))
+	      (go tag)))
+       (if (cdar l) (setq l (cons (car l) (cons (cdar l) (cdr l)))))))
+
+(defun lpt-tab ()
+    (do ((i (- (min #line-size
+		    (1+ (* 10 (1+ (// (1- id) 10)))))
+	       id)
+	    (1- i)))
+	((= 0 i))
+	(put-char #space)))
+
+(defun lpt-linefeed ()
+   (setq overrun nil)
+   (finish-line)
+   (if (= line-count #(- page-size bottom-margin))
+       (lpt-formfeed))
+   (if fortran-mode
+       (let ((ch (tyipeek nil in-file)))
+	    (cond ((= ch -1))				;eof
+		  ((= ch 61) (lpt-formfeed))		;form feed
+		  ((= ch 60) (let ((fortran-mode))	;double space
+				  (lpt-linefeed))))
+	    (if (not (= ch -1)) (tyi in-file)))))
+
+(defun lpt-formfeed ()
+   (do nil ((= line-count #page-size)) (finish-line))
+   (setq page-filepos (filepos in-file)
+	 page-number (1+ page-number))
+   (new-page))
+
+
+(defun new-page ()
+   (setq line-count 0 overrun nil)
+   (do nil ((= line-count #top-margin)) (finish-line))
+   (if (and listing-mode heading-text)			;page heading?
+       (progn						;yes
+	(textsetup heading-text)			;set up text array
+	(do ((I 0 (1+ i))				;look for Å$
+	     (ary-length (cadr (arraydims textarray))))
+	    ((or (= i ary-length) (= (arraycall fixnum textarray i) 15))
+	     (setq id i)) (declare (fixnum i ary-length))
+	    (if (and (= 177 (arraycall fixnum textarray i))
+		     (= 1   (arraycall fixnum textarray (1+ i)))
+		     (= 44  (arraycall fixnum textarray (+ i 2))))
+		(do ((l (exploden page-number) (cdr l)) (j 0 (1+ j)))
+		    ((= j 3)) (declare (fixnum j))
+		    (store (arraycall fixnum textarray (+ i j))
+			   (or (car l) #space)))))
+	(finish-line)
+	(finish-line))))
+
+(defun put-char (ch)
+   (if (= id #line-size)
+       (progn (lpt-linefeed)
+	      (setq overrun (not wrap-around))))
+   (if (not overrun)
+       (progn (store (arraycall fixnum textarray id) ch)
+	      (setq id (1+ id)))))
+
+(defun finish-line ()
+   (cond ((null
+	   (*catch 'chaos-pktiot-error
+		   (%send-character-line gould-connection textarray
+					 id (= 0 line-count))))
+	  (gould-disconnect)
+	  (gould-connect)
+	  (filepos in-file page-filepos)
+	  (new-page))
+	 (t (setq id 0 line-count (1+ line-count)))))
+
+
+(or (get 'defheadr 'subr) (get 'defheadr 'expr)
+    (fasload xgp fasl dsk glpt))
+
+(or (boundp 'textarray) (setq textarray (array nil fixnum 270.)))
+
+;; Local Modes:
+;; Mode: LISP
+;; Comment Col: 40
+;; END:

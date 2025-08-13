@@ -1,0 +1,7 @@
+7006697/glpt/arc.1
+7007940/glpspl/ar1.oglpt
+7007940/glpspl/arc.ooglpt
+7008049/glpt/arc.2
+7008134/glpt/arc.gould
+701428/glpt/arc.1
+mc_kl_arch_2of4_607_12_2_dec_1976/glpt/arc.1

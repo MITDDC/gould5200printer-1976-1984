@@ -1,0 +1,27 @@
+Work to be done on the R11MUX program:
+
+(1) EOL, EOS could be optimized several ways: remembering which
+    parts of the screen have been cleared; a repeat hack to
+    avoid buffering a large number of screen clearing spaces.
+    When this is fixed, reduce the size of TSTLEN!
+
+(2) Keyboard multiplexor software:
+    A. key repeat like the Imlac
+    b. Escape key functions - 
+       Esc F - form feed the Gould
+    c. special key routines (GRAD, DEL, etc. keys)
+    D. Something like Meta BREAK on the Imlac would be
+       a great win for fixing allocation screws.
+
+(3) Use bits (TO.BLK, etc) and bytes (TS.PTR, etc.) where
+    appropriate.
+
+(4) Make Gould TTY 23
+
+(5) Make channel definition more reasonable:
+    Define symbols for the multiplexor channels like
+    TTY23=0, TTY24=1, ...
+
+(6) Gould paper low handling could be made to win.
+
+

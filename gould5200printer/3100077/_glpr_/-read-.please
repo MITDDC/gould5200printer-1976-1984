@@ -1,0 +1,4 @@
+Please delete files that start with a period, such as .pfcpr 1.
+That means the file encountered an error when the spooler attempted
+to output it.  These files do not automatically disappear, and must
+be manually deleted !!  Thank you.

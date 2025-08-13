@@ -1,0 +1,1125 @@
+;;;	Graphics spooler for a matrix printer (Gould 5200)
+
+
+(Comment Spooler documentation)
+; 
+; Spool messages consist of file specifications and option flags.
+; File specs are in the form:
+;     <output filespec>_<filespec1><flags>,<filespec2><flags>,...  ,
+; where <filespec> is a standard ITS file spec (i.e. a sequence of
+; up to 4 words with the device and directory distinguished by : and ;
+; prefixes).  Flags are local to the preceeding filespec.  The optional
+; form  _(<global flags>)<filespec1>,... is also be allowed.
+; <flags> are single letters, possibly followed by arguments.  The 2
+; forms for flags are (as in the @ program) (<flag><flag>...) or
+; /<flag>/<flag> ...  the chars "/","(",")",",","^q"  can be quoted with ^q.
+; Suggested flags:
+; Control flags:
+; p	- Priority, preceded by a single digit (0-9)
+; b	- Black background
+; r	- Rotate the page.
+; v	- Verify.  Inform the user when his file has been printed (queued?)
+; k	- Kill (delete) the file once it has been printed.
+; u	- Unspool the file (i.e. remove it from the queue).
+; !	- Wraparound on over run lines (default is truncate unless in ;list mode)
+; *	- Reset the world
+; ?	- Send a status report
+; c	- Copies.  Preceeded by an numeric argument.
+; w	- Page width
+; z	- Page size
+; ~	- Don't cut paper. (Default is to cut at page boundaries)
+; @	- Indirect.  (i.e. treat file as a command file)
+; o	- Output format.  Next char: g (gould scan), x (xgp scan), b (bit image) - /o[x]
+; s	- Spool option.  To suppress this default for gould or xgp output, use -s
+; &	- Force image mode encoding (no scan compression).
+; $	- Append a graphic tail sheet.
+; File type flags (mutually exclusive - defaults to l):
+; a	- Ards.  File has chars plus ards graphics.
+; x	- Xgp.	File has xgp commands.
+; l	- List the file like the ;list command of the xgp spooler
+; h	- List the file using the hardware char generator.
+; t	- Tektronix.  File has tektronix graphics commands (from a netout file, etc.)
+; y	- Tty graphics (software tty conventions, yet to be established).
+; i	- File is image format.  Followed by b (bit image), x (xgp scan format), 
+;         or g (gould scan format). e.g. /i[x].  note /i is the same as /i[b]
+; d	- File is dplt format
+; A digit preceeding any of the file type flags is a page number at which
+; to start printing. + and - are used as prefixes to turn flags on or off (e.g. -!)
+
+; When an output file spec. is given, spooling is defaulted to being suppressed.
+
+(Comment Declarations - Macros - Initialization - Main loop)
+
+(DECLARE (SPECIAL TO-BE-PROCESSED Q-FILE PAGE-INDEX MAIL-FILE SENDER AT PAGE-WORD
+		  ASCII ARDS XGP TEK SOFTWARE-LPT IMAGE GTS-LIST)
+	 (FIXNUM I N CH)
+	 (notype (pluralizer? fixnum))
+	 (NEWIO T)
+	 (*EXPR DIRECTORY TRUENAME CLOSE DELETEF OPEN PROBEF SET-UNAME link))
+
+(DECLARE (EVAL (READ)))
+(FASLOAD LSPMAC FASL DSK JLK)
+
+(DECLARE (EVAL (READ)))
+(SETSYNTAX '/& 'MACRO '(LAMBDA () (+ 1_17 (READ)))) ; PRINTER COMMANDS
+
+(SSTATUS FEATURE GRAPHICS-SPOOLER)
+
+(SETQ GC-OVERFLOW '(LAMBDA (X) NIL))
+
+(SETQ TO-BE-PROCESSED NIL ITEM NIL PAGE-INDEX 1 PAGE-WORD 1
+      IN-FILE NIL MAIL-FILE NIL SPOOL-FILE NIL Q-FILE NIL
+      DEF-GLOBAL-FLAGS '((??) (ARDS-COMMANDS) (ASCII-COMMANDS) (BACKGROUND . 0)
+			 (COPIES . 1) (CUT-PAPER . T) (DELETE)
+			 (FILE-TYPE . XGP) (IMAGE-COMMANDS)
+			 (INDIRECT) (OUTPUT-TYPE . GOULD) (PAPER-HEIGHT . 850.)
+			 (PAPER-WIDTH . 1100.) (PRIORITY . 0) (RUN-ENCODE . T)
+			 (ROTATE . 0) (SKIP . 0) (SOFTWARE-TTY-COMMANDS) (SENDER)
+			 (SPOOL) (STATUS) (TAIL-SHEET) (TEK-COMMANDS) (WRAP-AROUND)
+			 (VERIFY) (XGP-COMMANDS . ((LIST))))
+      GTS-LIST '(((AR1 JLK) GIRL PIC)
+		 ((AR1 JLK) WUMPUS PIC)
+		 ((AR1 JLK) DRAGON PIC)
+		 ((AR1 JLK) WHEEL PIC)))
+
+(NCONC GTS-LIST GTS-LIST)
+
+; SPOOLER FUNCTIONS
+(SETQ ASCII 'ASCII-PRINT
+      ARDS  'ARDS-PRINT
+      DPLT  'DPLT-PRINT
+      XGP   'XGP-PRINT
+      TEK   'TEK-PRINT
+      IMAGE 'IMAGE-PRINT
+      SOFTWARE-TTY 'TTY-PRINT)
+
+; SPECIAL PRINTER CODES
+(DECLARE (EVAL (READ)))
+(SETQ ACK 301 TDQOT 215 TDORS 214 TDCLR 216 TDNOP 210 BEGIN 205 EOF 206 HOME &200
+      LINE+ &201 INIT &4 ENABLE &3 FINISH &70177 FORM-FEED &0 CUT-PAPER &2 GMODE &1
+      LAST-LINE &5 ENABLE-INTS &6 DISABLE-INTS &7 NEW-PAGE &40000 GRAPHICS-MODE 10000
+      REPEAT &301 TERMIN &302 MAX-SLEEP-PERIODS 120. SPOOL-SLEEP-TIME 5. MAIL-TIME 5.)
+
+; AUTOLOAD PROPERTIES FOR EXTERNAL FILES
+(MAPC '(LAMBDA (X)
+	(COND ((NOT (GETL (CAR X) '(SUBR EXPR)))
+	       (PUTPROP (CAR X) (CONS '(DSK GLPT) (CDR X)) 'AUTOLOAD))))
+
+      '((ARDS-PRINT . (ARDS FASL))
+	(DPLT-PRINT . (DPLT FASL))
+	(TEK-PRINT  . (ARDS FASL))
+	(XGP-PRINT  . (XGP FASL))))
+
+; USE THIS FUNCTION TO DUMP OUT A NEW GLPT;TS SPOOLR
+
+(DEFUN INIT-DUMP NIL
+       (SETQ ^W T)
+       (SETQ MSGFILES NIL)
+;       (fasload (dsk liblsp) link fasl)
+       (FASLOAD (DSK COMMON) ALLFIL FASL)
+       (FASLOAD (DSK COMMON) SORT FASL)
+       (SSTATUS TOPLEVEL '(SPOOLER))
+; SHOULD DO PURIFY$G WHEN NEWIO BUGS FIXED ??
+       (SUSPEND '|:PDUMP DSK:GLPT;TS SPOOLR/î|)
+       (COND ((EQ 'GSPOOL (STATUS JNAME)) (JCL-SPOOL)))
+       (COND ((NOT (CHECK-SPOOLER))
+	      (VALRET '|:UNSPOOLER ALREADY LAUNCHED AND RUNNING./î:KILL |)))
+       (COND ((NOT (SET-UNAME)) (VALRET '|17|) (SET-UNAME))))
+
+; THE TOPLEVEL SPOOLER.  ALTERNATE CHECKING FOR MAIL WITH SPOOLING FILES.
+; IF NOTHING HAS HAPPENED IN MAX-SLEEP-PERIODS OF SLEEPING, THEN DIE OF BOREDOM.
+
+(DEFUN SPOOLER NIL
+       (DO ((IBASE 10.) (BASE 10.) (*NOPOINT T)) (NIL)
+	   (COND ((PROBEF '|DSK:GLPT;[QUEUE FILE|)
+		  (SETQ Q-FILE (OPEN '|DSK:GLPT;[QUEUE FILE| '(DSK IN BLOCK ASCII))
+			TO-BE-PROCESSED (READ Q-FILE))
+		  (CLOSE Q-FILE)))
+	   (ALARMCLOCK 'TIME 1)
+	   (CATCH
+	    (DO NIL (NIL)
+		(COND (TO-BE-PROCESSED (PROCESS-FILE) (RECORD-Q))
+		      (T (SLEEP #SPOOL-SLEEP-TIME))))
+	    TOP)
+	   (RECORD-Q)))
+
+(DEFUN JCL-SPOOL ()
+       (COND ((NULL (STATUS JCL)) ; MAKE THIS UNNECESSARY SOMEDAY?
+	      (VALRET '|: MUST USE JCL WITH GSPOOL/î:KILL/î|)))
+       (VALRET '|:PROCED /î|)
+       (SETQ MAIL-FILE (OPEN '|DSK:GLPT;.GSPL. OUTPUT| '(DSK ASCII OUT))
+	     SENDER (STATUS XUNAME))
+       (PRINC (MAKNAM (STATUS JCL)) MAIL-FILE)
+       (CLOSE MAIL-FILE)
+       (SETQ MAIL-FILE (OPEN '|DSK:GLPT;.GSPL. OUTPUT| '(DSK ASCII IN)))
+       (PROCESS-SPECS)
+       (CLOSE MAIL-FILE)
+       (DELETEF MAIL-FILE)
+       (DO NIL ((NULL TO-BE-PROCESSED)) (PROCESS-FILE))
+       (VALRET '|:KILL |))
+
+(Comment Spooler mail processor)
+
+; PROCESS A MAIL FILE.  THIS MAY ALSO BE INVOKED BY THE CLI INTERRUPT HANDLER.
+; QUEUE UP FILES TO BE PROCESSED BY THE SPOOLER.
+
+; PROBEF THE FILE TO SEE IF IT EXISTS
+; THE STRUCTURE OF QUEUED ITEMS IS (<FILE-NAME-LIST> <FILE-TYPE> <PRIORITY> 
+; <FLAG ASSOCIATION LIST>).
+
+(DECLARE (SPECIAL GLOBAL-FLAGS DEF-GLOBAL-FLAGS UNSPOOL))
+
+(DEFUN PROCESS-MAIL () 
+       (SETQ MAIL-FILE (OPEN '|DSK:GLPT;GLMAIL <| '(IN DSK ASCII)))
+       (DO ((CH (TYI MAIL-FILE) (TYI MAIL-FILE)) (L NIL (CONS CH L)))
+	   ((= 100 CH)
+	    (SETQ SENDER (IMPLODE (NREVERSE L))
+		  AT (IMPLODE (LIST (TYI MAIL-FILE) (TYI MAIL-FILE))))))
+       (TYIPEEK 15 MAIL-FILE) (TYIPEEK 137 MAIL-FILE) (TYI MAIL-FILE)
+       (PROCESS-SPECS)
+       (CLOSE MAIL-FILE)
+       (ERRSET (DELETEF MAIL-FILE) NIL)
+       (CAR TO-BE-PROCESSED))
+
+(DEFUN PROCESS-SPECS ()
+       ; READ FILE SPECS AND FLAGS.  FORMAT IS:
+       ; ((<INPUT FILESPEC> <OUTPUT SPEC> <FLAG A-LIST> ...) (...) ...)
+       ; A SPECIAL VARIABLE, GLOBAL-FLAGS, IS SET TO A LIST OF ANY GLOBAL FLAGS.
+
+       (SETQ GLOBAL-FLAGS NIL)
+       (DO ((SPECSLIST (READ-FILE-SPECS MAIL-FILE) (CDR SPECSLIST))
+	    (G-FLAGS (MERGE-FLAGS (CONS (CONS 'SENDER SENDER)
+					(DECODE-FLAGS GLOBAL-FLAGS))
+				  DEF-GLOBAL-FLAGS))
+	    (DEF-DEVDIR (LIST 'DSK SENDER)) (DEF-FN1 '|.GLPT.|) (FILE) (FLAGS)
+	    (OUTPUT) (UNSPOOL))
+	   ((NULL SPECSLIST))
+	   (SETQ FILE (MERGEF (CAAR SPECSLIST) (LIST DEF-DEVDIR DEF-FN1 '>))
+		 DEF-DEVDIR (CAR FILE) DEF-FN1 (CADR FILE)
+		 FLAGS (MERGE-FLAGS (DECODE-FLAGS (CDDAR SPECSLIST)) G-FLAGS))
+	   (COND ((SETQ OUTPUT (CADAR SPECSLIST))
+		  (SETQ OUTPUT (MERGEF OUTPUT (LIST DEF-DEVDIR '> 'SCN)))))
+	   (COND (UNSPOOL (UNQUEUE-FILE FILE))
+		 (T (QUEUE-FILE FILE OUTPUT FLAGS)))))
+
+
+(DECLARE (SPECIAL XGP-COMMANDS ARDS-COMMANDS IMAGE-COMMANDS 
+		  TEK-COMMANDS ASCII-COMMANDS DPLT-COMMANDS))
+
+(DEFUN DECODE-FLAGS (FLAG-LIST)
+       (DO ((L FLAG-LIST (CDDR L)) (FL) (ITEM) (ARGS) (FLAG))
+	   ((NULL L) FL)
+	   (SETQ FLAG (CAR L) ARGS (CADR L)
+		 ITEM
+		 (COND ((NUMBERP FLAG) (CONS 'SKIP FLAG))
+		       ((EQ 'P FLAG) (CONS 'PRIORITY (COND (ARGS (CAR ARGS))(T 0))))
+		       ((EQ 'R FLAG) (CONS 'ROTATE (COND (ARGS (CAR ARGS))(T))))
+		       ((EQ 'V FLAG) (CONS 'VERIFY (COND (ARGS (CAR ARGS))(T))))
+		       ((EQ 'S FLAG) (CONS 'SPOOL T)) ; CHECK ARG?
+		       ((EQ 'B FLAG) (CONS 'BACKGROUND (COND (ARGS (CAR ARGS))(T 1))))
+		       ((EQ 'K FLAG) (CONS 'DELETE (COND (ARGS (CAR ARGS))(T))))
+		       ((EQ 'O FLAG)
+			(CONS 'OUTPUT-TYPE
+			      (COND ((OR (NULL ARGS) (ATOM (CAR ARGS))) 'GOULD)
+				    (T (OR (CDR (ASSQ (CAAR ARGS)
+						      '((X . XGP)
+							(G . GOULD)
+							(B . IMAGE)
+							(I . IMAGE))))
+					   (CAAR ARGS))))))
+		       ((EQ 'L FLAG)
+			(SETQ FL (CONS '(FILE-TYPE . XGP) FL))
+			(CONS 'XGP-COMMANDS (CONS '(LIST) ARGS)))
+		       ((EQ 'U FLAG) (SETQ UNSPOOL T) NIL)
+		       ((EQ '/~ FLAG) '(CUT-PAPER))
+		       ((EQ '* FLAG)
+			(COND ((MEMQ SENDER '(JLK CFK MACRAK)) (SPOOL-RESET))))
+		       ((EQ 'C FLAG) (CONS 'COPIES (COND (ARGS (CAR ARGS))(T 1))))
+		       ((EQ '/$ FLAG) (CONS 'TAIL-SHEET T))
+		       ((EQ '/& FLAG) (CONS 'RUN-ENCODE NIL))
+		       ((EQ '/! FLAG) (CONS 'WRAP-AROUND
+					    (COND (ARGS (CAR ARGS))(T NIL))))
+		       ((EQ '/@ FLAG) (CONS 'INDIRECT T))
+		       ((EQ 'X FLAG)
+			(SETQ FL (CONS '(FILE-TYPE . XGP) FL))
+			(CONS 'XGP-COMMANDS ARGS)) 
+		       ((EQ 'A FLAG)
+			(SETQ FL (CONS '(FILE-TYPE . ARDS) FL))
+			(CONS 'ARDS-COMMANDS ARGS)) 
+		       ((EQ 'D FLAG)
+			(SETQ FL (CONS '(FILE-TYPE . DPLT) FL))
+			(CONS 'DPLT-COMMANDS ARGS)) 
+		       ((EQ 'T FLAG)
+			(SETQ FL (CONS '(FILE-TYPE . TEK) FL))
+			(CONS 'TEK-COMMANDS ARGS))
+		       ((EQ 'Y FLAG)
+			(SETQ FL (CONS '(FILE-TYPE . SOFTWARE-TTY) FL))
+			(CONS 'SOFTWARE-TTY-COMMANDS ARGS)) 
+		       ((EQ 'H FLAG)
+			(SETQ FL (CONS '(FILE-TYPE . ASCII) FL))
+			(CONS 'ASCII-COMMANDS ARGS))
+		       ((EQ 'I FLAG)
+			(SETQ FL (CONS '(DELETE . T) (CONS '(FILE-TYPE . IMAGE) FL)))
+			(CONS 'IMAGE-COMMANDS ARGS)) 
+		       (T (CONS '?? FLAG))))
+	   (COND (ITEM (SETQ FL (CONS ITEM FL))))))
+
+(DEFUN MERGE-FLAGS (FL DEF-FL)
+       (SETQ FL (SORT FL (FUNCTION (LAMBDA(X Y) (ALPHALESSP (CAR X) (CAR Y))))))
+       (DO ((L FL (CDR L)) (DL DEF-FL (CDR DL)) (NFL))
+	   ((NULL L) (APPEND (REVERSE NFL) DL))
+	   (SETQ NFL
+		 (APPEND
+		  (COND ((EQ (CAAR L) (CAAR DL)) (NCONS (CAR L)))
+			(T (DO ((DL1 DL (CDR DL1)) (NFL1))
+			       ((OR (NULL DL1) (EQ (CAAR L) (CAAR DL1)))
+				(SETQ DL DL1) (CONS (CAR L) NFL1))
+			       (SETQ NFL1 (CONS (CAR DL1) NFL1)))))
+		  NFL))))
+
+(Comment File specification reader and parser)
+
+(DECLARE (SPECIAL FILE-SPEC-TAB))
+
+(DEFUN READ-FILE-SPECS (FILE)
+       ; LEXICAL SCAN OF FILE SPECS USING LISP'S READER
+       (DO ((L NIL (CONS (READ FILE 'E-O-F-R) L)) 
+	    (READTABLE FILE-SPEC-TAB) (IBASE 10.))
+	   ((AND L (OR (EQ 'E-O-F-R (CAR L)) (EQ (ASCII 15) (CAR L))))
+	    (COND ((NULL (CDR L)) (MAIL-ERROR '|NULL FILE SPECIFICATION. |))
+		  (T (PARSE-FILE-SPECS (NREVERSE (CDR L))))))))
+
+(DEFUN PARSE-FILE-SPECS (L)
+       ; CHECK FOR GLOBAL FLAGS AT THE START OF THE SPEC.
+       (COND ((EQ '/( (CAR L))
+	      (DO ((LL (CDR L) (CDR LL)) (F NIL (CONS (CAR LL) F)))
+		  ((OR (NULL LL) (EQ '/) (CAR LL)))
+		   (SETQ GLOBAL-FLAGS (PARSE-FLAGS F))
+		   (SETQ L (AND LL (CDR LL)))))))
+       ; BREAK UP MULTIPLE INPUT SPECS
+       (DO ((L (NCONC L '(/,)) (CDR L)) (SPECS) (FLAGS) (OUTPUT) (ALL-SPECS))
+	   ((NULL L) (NREVERSE ALL-SPECS))
+	   (COND ((EQ '/, (CAR L))
+		  (DO ((SL (PARSE-SPECS SPECS) (CDR SL))
+		       (OS (COND (OUTPUT (CAR (PARSE-SPECS OUTPUT)))))
+		       (FS (PARSE-FLAGS FLAGS)))
+		      ((NULL SL))
+		      (SETQ ALL-SPECS (CONS (CONS (CAR SL) (CONS OS FS)) ALL-SPECS)))
+		  (SETQ OUTPUT NIL SPECS NIL FLAGS NIL))
+		 ((EQ '/_ (CAR L))
+		  (SETQ OUTPUT SPECS SPECS NIL)
+		  (COND ((NULL OUTPUT) (SETQ OUTPUT '(*)))))
+		 ((MEMQ (CAR L) '(// /())
+		  (DO ((LL (CDR L) (CDR LL)))
+		      ((OR (EQ '/, (CAR LL)) (NULL LL)) (SETQ L (CONS NIL LL)))
+		      (COND ((MEMQ (CAR LL) '(// /( /) )))
+			    (T (SETQ FLAGS (CONS (CAR LL) FLAGS))))))
+		 (T (SETQ SPECS (CONS (CAR L) SPECS))))))
+
+(DEFUN PARSE-SPECS (L)
+       (COND (L ; SPECS ARE REVERSED AT THIS POINT
+	      (DO ((L L (CDR L)) (DEV '*) (SNAME '*)
+		   (FNLIST '(* *)))
+		  ((NULL L) (RPLACD (CDR FNLIST) NIL)
+		   (COND ((MEMQ (ASCII 0) FNLIST)
+			  (MAPCAR 'CAR
+				  (DIRECTORY !(,(CONS (LIST DEV SNAME)
+						      (SUBST '/* (ASCII 0) FNLIST)))
+					     NIL)))
+			 (T !(,(CONS (LIST DEV SNAME) FNLIST)))))
+		  (COND  ((EQ '/: (CAR L))
+			  (SETQ DEV (CAR (SETQ L (CDR L)))))
+			 ((EQ '/; (CAR L))
+			  (SETQ SNAME (CAR (SETQ L (CDR L)))))
+			 ((EQ '/* (CAR L)) (SETQ FNLIST (CONS (ASCII 0) FNLIST)))
+			 (T (SETQ FNLIST (CONS (CAR L) FNLIST))))))))
+
+; FLAG FORMATS:  <NUMBER>!<+ OR ->!<LETTER>![<CRUFT>]
+; RETURNS A LIST OF PAIRS: FLAG, ARGS, ...
+
+(DEFUN PARSE-FLAGS (FLAGS)
+       (DO ((L (REVERSE FLAGS) (CDR L)) (FS) (ARGS) (FLAG) (SKIP 0))
+	   ((NULL L) FS) (DECLARE (FIXNUM SKIP))
+	   (COND ((NOT (= 1 (FLATC (CAR L))))
+		  (SETQ L (NCONC (EXPLODEC (CAR L)) (CDR L)))))
+	   (COND ((NUMBERP (CAR L)) (SETQ SKIP (CAR L)))
+		 ((NUMBERP (SETQ FLAG (READLIST (LIST (CAR L))))) (SETQ SKIP FLAG))
+		 ((MEMQ (CAR L) '(+ -))
+		  (SETQ ARGS (CONS (CDR (ASSQ (CAR L) '((+ . T) (-)))) ARGS)))
+		 (T (SETQ FLAG (CAR L))
+		    (COND ((EQ '/[ (CADR L))
+			   (DO ((LL (CDDR L) (CDR LL)) (AL) (AL1))
+			       ((OR (NULL LL) (EQ '/] (CAR LL)))
+				(SETQ L LL
+				      ARGS (NCONC (NREVERSE (CONS (NREVERSE AL1) AL))
+						  ARGS)))
+			       (COND ((EQ '/| (CAR LL))
+				      (SETQ AL (CONS (NREVERSE AL1) AL) AL1 NIL))
+				     (T (SETQ AL1 (CONS (CAR LL) AL1)))))))
+		    (SETQ ARGS (NREVERSE ARGS))
+		    (COND ((NOT (ZEROP SKIP))
+			   (SETQ ARGS (CONS (CONS 'SKIP SKIP) ARGS))))
+		    (SETQ FS (CONS FLAG (CONS ARGS FS))
+			  ARGS NIL SKIP 0)))))
+
+; SET UP SYNTAX READ TABLE FOR LEXICAL SCANNING
+
+(SETQ FILE-SPEC-TAB (ARRAY NIL READTABLE))
+
+((LAMBDA(READTABLE) 
+	(SETSYNTAX 15 601540 15)
+	(SETSYNTAX '/; 600500 '/;)
+	(SETSYNTAX '/: 600500 '/:)
+	(SETSYNTAX '/, 600500 '/,)
+	(SETSYNTAX '/ 402500 NIL)
+	(SETSYNTAX '/. 1 '/.)
+	(SETSYNTAX '/! 600500 '/!)
+	(SETSYNTAX '/% 600500 '/%)
+	(SETSYNTAX '/| 600500 '/|)
+	(SETSYNTAX '/[ 600500 '/[)
+	(SETSYNTAX '/] 600500 '/])
+	(SETSYNTAX '/( 600500 '/()
+	(SETSYNTAX '/) 600500 '/))
+	(SETSYNTAX '/' 600500 '/')
+	(SETSYNTAX '/^ 600500 '/^)
+	(SETSYNTAX '/_ 600500 '/_)
+	(SETSYNTAX '// 600500 '//)
+	(SETSYNTAX '/ 600500 '/)
+	(SETSYNTAX '/ 600500 '/)
+	(SSTATUS TTYREAD NIL))
+	FILE-SPEC-TAB)
+
+(Comment Queueing - unqueueing and queue processing functions)
+
+(DECLARE (SPECIAL ITEM))
+
+(DEFUN UNQUEUE-FILE (FILE-SPEC)
+       (COND ((DO ((L TO-BE-PROCESSED (CDR L))) ((NULL L) T)
+		  (COND ((EQUAL FILE-SPEC (CAAR L))
+			 (COND ((CDR L) (RPLACA L (CADR L)) (RPLACD L (CDDR L)))
+			       (T (RPLACA L NIL) (RPLACD L NIL)))
+			 (RETURN NIL))))
+	      (COND ((EQUAL FILE-SPEC (CAR ITEM))
+		     (CLOSE MAIL-FILE)
+		     (ERRSET (DELETEF MAIL-FILE) NIL)
+		     (NOINTERRUPT NIL)
+		     (THROW NIL TOP)))))
+       (RECORD-Q))
+
+(DEFUN QUEUE-FILE (FILE OUTPUT FLAGS)
+       (COND ((NULL (PROBEF FILE)) (MAIL-ERROR '|FILE NOT FOUND.  |))
+	     ((AND OUTPUT
+		   (NULL (PROBEF (LIST (CAR OUTPUT) '|.FILE.| '|(DIR)|))))
+	      (MAIL-ERROR '|NON EXISTENT DIRECTORY.  |))
+	     (T (SETQ FILE (OPEN FILE)
+		      TO-BE-PROCESSED
+		      (PRIORITY-ARBITRATE
+		               TO-BE-PROCESSED
+			       (LIST (TRUENAME FILE)
+				     OUTPUT
+				     (OR (CDR (ASSQ 'FILE-TYPE FLAGS)) 'ASCII)
+				     (OR (CDR (ASSQ 'PRIORITY FLAGS)) 0)
+				     FLAGS)))
+		(CLOSE FILE)
+		(RECORD-Q))))
+
+(DEFUN PRIORITY-ARBITRATE (LIST ITEM)
+       (DO ((L LIST (CDR L)))
+	   ((NULL L) (NCONC LIST (NCONS ITEM)))
+	   (COND ((> (CADDDR ITEM) (CADDDR (CAR L)))
+		  (RPLACD L (CONS (CAR L) (CDR L))) (RPLACA L ITEM) 
+		  (RETURN LIST)))))
+
+(DEFUN RECORD-Q NIL
+       (COND (TO-BE-PROCESSED
+	      (SETQ Q-FILE (OPEN '|DSK:GLPT;[QUEUE FILE| '(DSK OUT BLOCK ASCII)))
+	      (PRIN1 TO-BE-PROCESSED Q-FILE) (TERPRI Q-FILE)
+	      (CLOSE Q-FILE))
+	     ((PROBEF '|DSK:GLPT;[QUEUE FILE|) (DELETEF '|DSK:GLPT;[QUEUE FILE|))))
+
+(DECLARE (SPECIAL BACKGROUND COPIES CUT-PAPER DELETE FILE-TYPE INDIRECT OUTPUT
+		  PAPER-HEIGHT PAPER-WIDTH PRIORITY RUN-ENCODE ROTATE SKIP STATUS
+		  WRAP-AROUND VERIFY XGP-COMMANDS ARDS-COMMANDS ASCII-COMMANDS
+		  TEK-COMMANDS SOFTWARE-TTY-COMMANDS IMAGE-COMMANDS OUTPUT-TYPE
+		  IN-FILE SPOOL-FILE TAIL-SHEET PAGES TV-SIZE-X TV-SIZE-Y ITEM
+		  OUTPUT-FILE PENDING-LINE-SPACES SPOOL DEF-XGP-ROT UNSPOOL-FILE)
+	 (*EXPR ARDS-PRINT))
+
+(DEFUN PROCESS-FILE NIL
+       (LAMBIND
+	((BACKGROUND 0) (COPIES 1) (CUT-PAPER T) (DELETE) (FILE-TYPE 'XGP)
+	 (INDIRECT) (OUTPUT-TYPE 'GOULD) (PAPER-HEIGHT 850.) (PAPER-WIDTH 1100.)
+	 (PRIORITY 0) (RUN-ENCODE T) (ROTATE 0) (SKIP 0) (STATUS) (WRAP-AROUND T)
+	 (VERIFY) (ITEM) (XGP-COMMANDS) (ASCII-COMMANDS) (ARDS-COMMANDS)
+	 (TEK-COMMANDS) (IMAGE-COMMANDS) (SOFTWARE-TTY-COMMANDS) (SPOOL)
+	 (TAIL-SHEET) (TV-SIZE-X 65.) (TV-SIZE-Y 1) (PENDING-LINE-SPACES 0)
+	 (DEF-XGP-ROT 3.) (UNSPOOL-FILE '|DSK:.GLPT.;[GLPT] >|)
+	 (OUTPUT-FILE '|DSK:.GLPT.;[GLPT] >|) (PAGE-INDEX 1) (PAGES 0) (PAGE-WORD 1))
+	(NOINTERRUPT T)
+	(DO ((L TO-BE-PROCESSED (CDR L)))
+	    ((OR (NULL L) (CAR L))
+	     (COND ((NULL L) (THROW NIL TOP)))
+	     (SETQ ITEM (CAR L) TO-BE-PROCESSED (CDR L))))
+	(NOINTERRUPT NIL)
+	(DO ((L (CADDDR (CDR ITEM)) (CDR L))) ((NULL L)) (SET (CAAR L) (CDAR L)))
+	(SETQ SPOOL-FILE (OPEN '|DSK:GLPT;.GLPT. OUTPUT| '(OUT DSK FIXNUM BLOCK)))
+	(COND ((MEMQ FILE-TYPE '(ARDS XGP TEK)) (SETQ TV-SIZE-Y 1700.)))
+	(COND ((CADR ITEM) (SETQ OUTPUT-FILE (CADR ITEM))) ; SET DIR OF SPOOL-FILE??
+	      ((EQ 'XGP OUTPUT-TYPE) ; WHAT IF SENDER DOESN'T HAVE A DIR?
+	       (SETQ OUTPUT-FILE (LIST (LIST 'DSK SENDER) '> 'SCN)
+		     DEF-XGP-ROT 0.
+		     TV-SIZE-X 52.  ;image line length = 54. but 1 1/2 words of header
+		     TV-SIZE-Y 2112.)))
+	(DO ((I 0 (1+ I)))
+	    ((= I COPIES))
+	    (FUNCALL (EVAL (CADDR ITEM)) (CAR ITEM))
+	    (COND (TAIL-SHEET (ARDS-PRINT (CAR (SETQ GTS-LIST (CDR GTS-LIST))))))
+	    (COND ((NOT (EQ 'ASCII (CADDR ITEM))) (FORCE-LINE-SPACES)))
+	    (COND ((EQ 'GOULD OUTPUT-TYPE) (DPWORD #FINISH) (FORCEOUT))))
+	(COND (DELETE (DELETEF IN-FILE)))
+	(COND ((> (FILEPOS SPOOL-FILE) 0.)
+	       (RENAME SPOOL-FILE OUTPUT-FILE)
+	       (CLOSE SPOOL-FILE)
+	       (COND (SPOOL (LINK OUTPUT-FILE UNSPOOL-FILE))))
+	      (T (CLOSE SPOOL-FILE)
+		 (DELETEF SPOOL-FILE)))))
+
+(Comment Page initialization)
+
+(DECLARE (FIXNUM (DPWORD FIXNUM) BYTE WORD)
+	 (array* (fixnum (outarray 2050.) linearray 1)))
+(DECLARE (EVAL (READ)))
+(SETQ OUTSIZE 2050.
+      NOP-WORD (+ 1 (LSH #TDNOP 4) (LSH #TDNOP 12.) (LSH #TDNOP 20.) (LSH #TDNOP 28.)))
+
+
+(progn (ARRAY LINEARRAY FIXNUM 135.) (ARRAY OUTARRAY FIXNUM 2050.)
+       (FILLARRAY 'OUTARRAY '(#NOP-WORD))
+       (STORE (OUTARRAY 0) #(+ 36._30. 8_24. 8._18. 1)))
+
+(DEFUN BEGIN-PAGE ()
+       (SETQ PAGES (1+ PAGES))
+       (FORCE-LINE-SPACES)
+       (FORCEOUT)
+       (CHECK-SPOOL-LOAD)
+       (COND ((EQ 'GOULD OUTPUT-TYPE)
+	      (STORE (OUTARRAY 1) #(+ NOP-WORD 3)) ; MARK PAGE BOUNDARY
+	      (DPWORD (+ #NEW-PAGE 
+			 (COND ((NOT (EQ 'ASCII FILE-TYPE)) #GRAPHICS-MODE)
+			       (T 0))
+			 (BOOLE 1 37 PAGE-INDEX)))
+	      (SETQ PAGE-INDEX (1+ PAGE-INDEX)))
+	     (T '?))
+       T)
+
+(Comment Spooler for ascii files)
+
+(DECLARE (EVAL (READ)))
+
+;;; @@@@@@@		THE OLD CODE	   @@@@@@@
+
+(SETQ BOTTOM-MARGIN 2 TOP-MARGIN 5 DOLLAR 44 SPACE 40 CARET 136
+	PAGE-SIZE 62. MAX-LINE-SIZE 132.)
+
+;; Implement skip for this mode.  Page size?, Margins (top, side)
+(DEFUN ASCII-PRINT (FILE)
+       (SETQ IN-FILE (OPEN FILE '(IN DSK IMAGE)))
+       (TOP-PAGE)
+       (DO ((CH (TYI IN-FILE) (TYI IN-FILE)) (LCNT 0)
+	    (I 0 (1+ I)) (ID 1) (OVER-RUN)
+	    (CC (CADDAR (DIRECTORY (LIST (TRUENAME IN-FILE)) '(CHARACTERS))))
+	    (WORDC (CADDAR (DIRECTORY (LIST (TRUENAME IN-FILE)) '(WORDS)))))
+	   ((= I CC) (FINISH-LINE ID) (HOME-DOWN LCNT) (CLOSE IN-FILE))
+	   (DECLARE (FIXNUM ID CH CC WORDC LCNT))
+	   (COND ((NOT (AND (OR (= 3 CH) (= 14 CH))
+			    (NOT (> WORDC (1+ (// (FILEPOS IN-FILE) 5))))))
+		  (COND ((= 33 CH) (SETQ CH #DOLLAR)))
+		  (COND ((OR (= 14 CH) (= 12 CH))
+			 (FINISH-LINE ID)
+			 (SETQ ID 1 LCNT (1+ LCNT)) OVER-RUN NIL))
+		  (COND ((OR (= 14 CH) (= #PAGE-SIZE LCNT))
+			 (ASCII-FF LCNT) (SETQ LCNT 0))
+			((OR (= 15 CH) (= 12 CH) OVER-RUN))
+			((= 11 CH)
+			 (DO I (- (MIN #MAX-LINE-SIZE (+ 11 (BOOLE 4 (1- ID) 7))) ID)
+			     (1- I) (= 0 I) (STORE (LINEARRAY ID) #SPACE)
+			     (SETQ ID (1+ ID))))
+			((< CH 40)
+			 (STORE (LINEARRAY ID) #CARET)
+			 (STORE (LINEARRAY (SETQ ID (1+ ID))) (+ 100 CH))
+			 (SETQ ID (1+ ID)))
+			(T (STORE (LINEARRAY ID) CH) (SETQ ID (1+ ID))))))
+	   (COND ((OR (AND WRAP-AROUND (> ID #(1- MAX-LINE-SIZE)))
+		      (= ID #MAX-LINE-SIZE))
+		  (COND ((NOT WRAP-AROUND)
+			 (STORE (LINEARRAY ID) 174)
+			 (SETQ ID (1+ ID))))
+		  (FINISH-LINE ID) (SETQ ID 1 LCNT (1+ LCNT))
+		  (SETQ OVER-RUN WRAP-AROUND)))))
+(COMMENT
+(DECLARE (special page-rev))	;again, should go to general flag hack section
+;;;Remember to set up flag hackery for page-rev!!
+(SETQ PAGE-REV NIL) 		; Just so this can compile
+
+(DEFUN ASCII-PRINT (FILE)
+	(do ((numcop copies (1- numcop))
+	     (page-locs (cond (page-rev (ascii-print1 file t nil skip))
+			      (t nil))))
+	    ((= numcop 0))
+	    (ascii-print1 file nil page-locs (cond (page-rev 0) (t skip))))
+	t)
+
+;; Pass1 produces as value of a-p1 a list of
+;;  the locations of the beginnings of pages reversed,
+;;   which pass2 takes as a third argument.
+;; In the two-pass version, Skip does its dirty work
+;;  on the first pass, as can be seen above in ascii-print
+
+
+(defun ascii-print1 (file pass1? page-locs skip)
+       (setq in-file (open file '(in dsk image)))
+       (cond ((not pass1?)
+	      (top-page)				;Remember that there is no ^l
+	      (cond (page-rev (filepos in-file (car page-locs)))))) ;at start of file.
+       (do ((ch 0 (prog2 t (tyipeek 14 in-file)
+			   (tyi in-file))) 		;Note that first time through
+	    (pages-to-skip skip (1- pages-to-skip)))	; this DO does nothing
+	   ((or (zerop pages-to-skip) (= ch 3))
+	    (cond ((= ch 3) (user-error '|Skip fell off end after |
+					(setq ch (- skip pages-to-skip))
+					'| page|
+					(pluralizer? ch)))))
+	   (declare (fixnum pages-to-skip)))
+       (do ((ch (tyi in-file) (tyi in-file))
+	    (lcnt 0)					;Line count
+	    (i 0 (1+ i))				;# of chars read
+	    (id 1)					;Position in line--chars
+	    (pos 0)					;Pos in bits for vrbl-width
+	    (over-run)					;Page overrun?
+	    (cc (file-property in-file 'characters))	;True character count
+	    (wordc (file-property in-file 'words))	;For eof check
+	    (page-boundary-locs '(0)))			;List of page boundary locations
+	   ((= i cc)
+	    (cond ((not pass1?) (finish-line id) (home-down lcnt)))
+	    (close in-file)
+	    page-boundary-locs)
+	   (declare (fixnum id ch cc wordc lcnt num))
+	   (cond ((not (and (or (= 3 ch) (= 14 ch))	;If at eof, ^C and ^L ignored
+			    (not (> wordc (1+ (// (filepos in-file) 5))))))
+		  (cond ((= 33 ch) (setq ch #dollar)))
+		  (cond ((or (= 14 ch) (= 12 ch))
+			 (or pass1? (finish-line id))
+			 (setq id 1 lcnt (1+ lcnt)) over-run nil))
+		  (cond ((or (= 14 ch) (= #page-size lcnt))
+			 (cond (pass1? (ascii-ff lcnt))
+			       (t (setq page-boundary-locs (cons (filepos in-file)
+								 page-boundary-locs)))))
+;;			 (or pass1? (ascii-ff lcnt)) (setq lcnt 0)
+			((or (= 15 ch) (= 12 ch) over-run))
+			((= 11 ch)
+			 ((lambda (num)			;number of spaces for a tab
+				  (or pass1? 
+				      (do ((i id (1+ i)) (imax (+ id num)))
+					  ((= i imax))
+					  (store (linearray i) #space)))
+				  (setq id (+ id num)))
+			  (- (min #max-line-size (+ 11 (boole 4 (1- id) 7))) id)))
+			((< ch 40)
+			 (or pass1? (progn (store (linearray id) #caret)
+					   (store (linearray (1+ id)) (+ 100 ch))
+					   (setq id (+ id 2)))))
+			(t (or pass1? (store (linearray id) ch))
+			   (setq id (1+ id))))))
+	   (cond ((or (and wrap-around (> id #(1- max-line-size)))
+		      (= id #max-line-size))
+		  (cond ((not wrap-around)
+			 (or pass1? (store (linearray id) 174))
+			 (setq id (1+ id))))
+		  (or pass1? (finish-line id))
+		  (setq id 1 lcnt (1+ lcnt))
+		  (setq over-run wrap-around)))))
+
+
+(defun file-property (file prop) (caddar (directory (list (truename file))
+						    (list prop))))
+)
+
+(DEFUN FINISH-LINE (ID)
+       (COND ((= 1 ID) (LINE-FEED))
+	     (T (DPWORD (// ID 2))
+		(DO ((I 1 (1+ (1+ I))))
+		    ((NOT (< I ID)))
+		    (DPWORD (+ (LSH (LINEARRAY I) 10)
+			       (OR (AND (NOT (< (1+ I) ID)) #SPACE)
+				   (LINEARRAY (1+ I)))))))))
+
+(DEFUN ASCII-FF (LC) (HOME-DOWN LC) (TOP-PAGE))
+
+(DEFUN HOME-DOWN (LC)
+   (LAMBIND ((X (- #(+ BOTTOM-MARGIN PAGE-SIZE) LC)))
+	     (COND ((> X 0) (DPWORD #REPEAT) (DPWORD X) (LINE-FEED) (DPWORD #TERMIN)))))
+
+(DEFUN TOP-PAGE ()
+    (BEGIN-PAGE)
+    (COND ((> #TOP-MARGIN 0)
+	   (DPWORD #REPEAT)
+	   (DPWORD #TOP-MARGIN)
+	   (LINE-FEED)
+	   (DPWORD #TERMIN))))
+
+(DEFUN LINE-FEED NIL 
+       (DPWORD 1) (DPWORD #(+ SPACE (LSH SPACE 10)))) ;(DPWORD #LINE+)
+
+(array charwidth fixnum 200)
+
+((lambda (between-do setwd)
+	 (between-do 40 57 '(setwd i 8.))
+	 (between-do 60 77 '(setwd i 12.))
+	 (between-do 100 137 '(setwd i 16.))
+	 (between-do 140 177 '(setwd i 12.)))
+ (mapcar '(lambda (one-size-list)
+	   (mapcar '(lambda (char)
+			    (setwd char (car one-size-list)))
+		   (cdr one-size-list)))
+	 '((8. 22 61 72 73 111 133 135 140 146 151 152 154 164 173 174 175)
+	   (12. 23 42 43 53 55 57 112 114)
+	   (16. 24 40 44 45 46 52 60 64 77 155 167 177)))
+ (lambda (lowlim highlim form)		;crock!
+	 (do ((i lowlim (1+ i)))
+	     ((> i highlim))
+	     (eval form)))
+ (lambda (ch w) (store (charwidth ch) w) t))
+(gctwa)
+
+(Comment Composition array scan out and compression functions)
+
+(DECLARE (SPECIAL TV-SIZE-X TV-SIZE-Y PENDING-LINE-SPACES)
+	 (FIXNUM  TV-SIZE-XTV-SIZE-Y PENDING-LINE-SPACES (ILDB* FIXNUM FIXNUM))
+	 (array* (fixnum tv 2))
+	 (*EXPR ILDB*))
+
+(DECLARE (EVAL (READ))) (SETQ LFT-MAR 0)
+
+(SETQ TV-SIZE-X 65. TV-SIZE-Y 1 PENDING-LINE-SPACES 0)
+(progn (ARRAY TV FIXNUM TV-SIZE-Y TV-SIZE-X))
+
+(DEFUN TV-FORMFEED ()
+       (COND ((EQ 'XGP OUTPUT-TYPE) (XGP-SCAN) (CHECK-FILE-SIZE))
+	     ((EQ 'BIT OUTPUT-TYPE) (FILLARRAY SPOOL-FILE 'TV))
+	     (T (BEGIN-PAGE)
+		(DO I 0 (1+ I) (= I TV-SIZE-Y) (SCAN-LINE I))
+		(CHECK-FILE-SIZE))))
+
+(DEFUN FORCE-LINE-SPACES NIL			; XGP OUTPUT MODE??
+;       (COND ((NOT (< PENDING-LINE-SPACES 256.))
+;	      (DO I (- PENDING-LINE-SPACES 256.) (- I 256.) (< I 0)
+;		  (DPWORD #HOME) (SETQ PENDING-LINE-SPACES I))))
+;;;; THIS DOESN'T WORK FOR SOME HARDWARE REASON
+;       (COND ((NOT (< PENDING-LINE-SPACES 128.))
+;	      (DO I (- PENDING-LINE-SPACES 128.) (- I 128.) (< I 0)
+;		  (DPWORD #FORM-FEED) (SETQ PENDING-LINE-SPACES I))))
+;;;;
+       (COND ((> PENDING-LINE-SPACES 3)
+	      (DPWORD #REPEAT) (DPWORD PENDING-LINE-SPACES)
+	      (DPWORD 1) (DPWORD 0) 	; TRY (DPWORD #LINE+) ?
+	      (DPWORD #TERMIN))
+	     (T (DO I PENDING-LINE-SPACES (1- I) (= 0 I) (DPWORD 1) (DPWORD 0))))
+       (SETQ PENDING-LINE-SPACES 0))
+
+
+
+(DEFUN TEST-FORMFEED ()
+       (SETQ SPOOL-FILE (OPEN '|DSK:.GLPT.;[GLPT] >| '(OUT DSK FIXNUM BLOCK)))
+       (BEGIN-PAGE)
+       (DO I 0 (1+ I) (= I TV-SIZE-Y) (SCAN-LINE I))
+       (FORCE-LINE-SPACES)
+       (DPWORD #FINISH) (FORCEOUT)
+       (CLOSE SPOOL-FILE)
+       NIL)
+
+(DEFUN SCAN-LINE (LINEN)
+       (DECLARE (FIXNUM LINEN))
+       (PROG (START WIDTH MAX-ID WORDS IMAGE MARGIN)
+	     (DECLARE (FIXNUM START WIDTH MAX-ID WORDS MARGIN))
+	     (SETQ WIDTH TV-SIZE-X START 0 MAX-ID 0)
+	     (COND ((= 1 BACKGROUND) (SETQ WORDS (* 2 WIDTH)) (GO IMAGE)))
+	     (DO ((I 0. (1+ I)))
+		 ((OR (= I WIDTH) (NOT (= (TV LINEN I) 0.)))
+		  (SETQ START I) NIL))
+;	     (COND ((= START WIDTH) (DPWORD 1)(DPWORD 0) (RETURN NIL)))
+	     (COND ((= START WIDTH)
+		    (SETQ PENDING-LINE-SPACES (1+ PENDING-LINE-SPACES))
+		    (RETURN NIL)))
+	     (SETQ START (MIN 76 START))
+	     (COND ((> PENDING-LINE-SPACES 0) (FORCE-LINE-SPACES)))
+	     (DO ((I (1- WIDTH) (1- I)))
+		 ((OR (< I START) (NOT (= (TV LINEN I) 0.)))
+		  (SETQ WIDTH (1+ I)) NIL))
+	     (SETQ WORDS (MIN 126. (* 2 (- WIDTH START)))
+		   MARGIN (+ #LFT-MAR (* 2 START)))
+	     (DO ((I START (1+ I)) (IMAX (+ START (// WORDS 2)))
+		  (COUNT 0) (ID 0) (CBYTE 0) (BEGIN T)
+		  (BYTE-PTR-LIST '(341001_18. 441001_18. 141001_18. 241001_18.))
+		  (WORD))
+		 ((= I IMAX)
+		  (COND ((NOT (= 0 COUNT))
+			 (STORE (LINEARRAY ID)
+				(+ (LSH CBYTE 8) (BOOLE 1 200 CBYTE) (1- COUNT)))
+			 (SETQ ID (1+ ID))))
+		  (SETQ MAX-ID (MIN 126. ID)))
+		 (DECLARE (FIXNUM IMAX COUNT ID CBYTE))
+		 (COND ((> ID WORDS) (SETQ MAX-ID ID) (RETURN NIL)))
+		 (SETQ WORD (TV LINEN I))
+		 (DO ((L BYTE-PTR-LIST (CDR L)) (BYTE 0))
+		     ((NULL L))
+		     (SETQ BYTE (ILDB* WORD (CAR L)))
+		     (COND ((AND BEGIN (OR (= 0 BYTE) (= 377 BYTE)))
+			    (SETQ CBYTE BYTE BEGIN NIL)))
+		     (COND ((NOT (= CBYTE BYTE))
+			    (COND ((> COUNT 177)
+				   (STORE (LINEARRAY ID)
+					  (+ (LSH CBYTE 8) (BOOLE 1 200 CBYTE) 177))
+				   (SETQ COUNT (- COUNT 200) ID (1+ ID))))
+			    (STORE (LINEARRAY ID) (+ (LSH BYTE 8)
+						     (BOOLE 1 200 CBYTE) COUNT))
+			    (SETQ COUNT 0 ID (1+ ID) BEGIN T))
+			   (T (SETQ COUNT (1+ COUNT))))))
+IMAGE	     (SETQ IMAGE (OR (NOT RUN-ENCODE) (< WORDS MAX-ID) (= 1 BACKGROUND)))
+	     (COND (IMAGE
+		    (DPWORD (+ (LSH MARGIN 8) WORDS))
+		    (DO ((I START (1+ I)) (IMAX (+ START (// WORDS 2)))
+			 (WORD 0) (MASK (* BACKGROUND 177777)))
+			((= I IMAX))
+			(SETQ WORD (TV LINEN I))
+			(DPWORD (BOOLE 6 MASK (LSH WORD -20.)))
+			(DPWORD (BOOLE 6 MASK (LSH WORD -4)))))
+		   (T
+		    (DPWORD (+ 600 MAX-ID))
+		    (DPWORD (+ 1_17 (LSH WORDS 8) (LSH BACKGROUND 7) MARGIN))
+		    (DO ((I 0 (1+ I)) (MASK (* BACKGROUND 477_7)))
+			((= I MAX-ID)) (DECLARE (FIXNUM MASK))
+			(DPWORD (BOOLE 6 MASK (LINEARRAY I)))))))
+       T)
+
+(Comment Image formats file processing)
+
+(DECLARE (EVAL (READ))) (SETQ MAX-NO-FONTS 20 )
+
+(DEFUN IMAGE-PRINT (FILE)
+       (*REARRAY 'TV 'FIXNUM 2 TV-SIZE-X)
+       (SETQ IN-FILE (OPEN FILE '(DSK IN FIXNUM)))
+       (BEGIN-PAGE)
+       (COND ((EQ 'X (CAR IMAGE-COMMANDS))
+	      (DO NIL ((INPUT-XGP-LINE IN-FILE)) (SCAN-LINE 0)))
+	     ((EQ 'G (CAR IMAGE-COMMANDS))
+	      (*rearray 'tv 'fixnum 1 tv-size-x)
+;DEFINE FILE-LENGTH
+	      (DO ((length (file-length in-file))) ((not (< (filepos in-file) length)))
+		  (fillarray 'tv in-file) (fillarray spool-file 'tv)))
+	     (T
+	      (DO ((LINES  (// (CADDAR (DIRECTORY (LIST (TRUENAME IN-FILE)) '(WORDS)))
+			       TV-SIZE-X) (1- LINES)))
+		  ((= 0 LINES))
+		  (DO I 0 (1+ I) (= I TV-SIZE-X) (STORE (TV 0 I) (IN IN-FILE)))
+		  (SCAN-LINE 0))))
+       (CLOSE IN-FILE))
+
+(DEFUN INPUT-XGP-LINE (FILE) FILE)
+(DEFUN INPUT-GOULD-LINE (FILE) FILE)
+
+
+(DECLARE (SPECIAL TV-SIZE-Y TV-SIZE-X)
+	 (FIXNUM LINENO WIDTH BYTES COUNT XORMASK WORD COLACC I NUM DUM M WORDACC
+		 OWORD SHIFT MASK1 MASK2 Y Y1 TV-SIZE-X TV-SIZE-Y BYTEPTR XGP-WIDTH
+		 LAST-LINE WA-SIZE (CIRC FIXNUM))
+	 (*EXPR CIRC)
+	 (ARRAY* (FIXNUM WORKING-ARRAY 1.)))
+
+(DECLARE (EVAL (READ))) (SETQ XGP-SCAN-START 0)
+(OR (GET 'CIRC 'SUBR) (DEFPROP CIRC (FTV FASL DSK GLPT) AUTOLOAD))
+; CHECK FIX UP ARRAY BEFORE FILLARRAYS (0'TH ELEMENT, LENGTH, COUNT, ETC)
+; CHECK BYTE-PTR.  SHOULD USE ILDB FUNCTION SOMEDAY.
+(DEFUN XGP-SCAN () 
+       (ARRAY WORKING-ARRAY FIXNUM 1.)
+       (DO ((LINENO #XGP-SCAN-START (1+ LINENO))
+	    (WA-SIZE (+ TV-SIZE-X 3.))  ; one extra for idpb header
+	    (WIDTH TV-SIZE-X TV-SIZE-X) (COUNT 6. 6.) (BYTES 0.) (WORD 0.)
+	    (IMAGE NIL NIL) (XORMASK (LSH -1. -4.)) (MASK1 (+ 255._28. 255._12.))
+	    (MASK2 (+ 255._20. 255._4.)) (WORKING-ARRAY (GET 'WORKING-ARRAY 'ARRAY))
+	    (XGP-WIDTH 54.))
+	   ((= LINENO TV-SIZE-Y)
+	    (OUT SPOOL-FILE (LSH (+ 2._16. 1._15. (* 192. 11.)) 4.))
+	    (OUT SPOOL-FILE 0))
+	   (*REARRAY 'WORKING-ARRAY 'FIXNUM WA-SIZE)
+	   (STORE (WORKING-ARRAY 0) #(+ 20._30. 8._24. 8._18. 2))
+	   (STORE (WORKING-ARRAY 2) 0)
+	   (SETQ BYTES (* 4. (1+ WIDTH)))
+	   (DO ((I (1- WIDTH) (1- I)))
+	       ((OR (< I 0.) (NOT (= (TV LINENO I) 0.))) (SETQ WIDTH (1+ I))))
+	   (DO ((I 0. (1+ I)) (COLACC 0.) (COLOUR NIL))    ;NIL=WHITE T=BLACK
+	       ((= I WIDTH)
+		(COND ((= COUNT 6.) (SETQ COUNT 0.))
+		      (T (IDPB 0 WORKING-ARRAY) (IDPB 0 WORKING-ARRAY)
+			 (IDPB 0 WORKING-ARRAY) (IDPB 1 WORKING-ARRAY)
+			 (SETQ COUNT (+ COUNT 4.))
+			 (COND ((NOT (= (BOOLE 1. COUNT 3.) 0.))
+				(IDPB 0 WORKING-ARRAY) (IDPB 0 WORKING-ARRAY)
+				(SETQ COUNT (+ COUNT 2.))))
+			 (SETQ COUNT (// COUNT 4.)))))
+	       (SETQ WORD (LSH (TV LINENO I) -4.))
+	       (COND (COLOUR (SETQ WORD (BOOLE 6. WORD XORMASK))))
+	       (DO ((WORDACC 0.) (NUM 0.) (DUM 0.) (EXITP))
+		   (NIL)
+		   (SETQ NUM (- 32. (HAULONG WORD))
+			 WORDACC (+ WORDACC NUM)
+			 COLACC (+ COLACC NUM))
+		   (COND ((> WORDACC 31.)
+			  (SETQ COLACC (- COLACC WORDACC -32.))
+			  (COND ((AND COLOUR (= (1+ I) WIDTH)) (SETQ EXITP T))
+				(T (RETURN NIL)))))
+		   (SETQ DUM (1- (* 2. (// (+ 254. COLACC) 255.))))
+		   (COND ((NOT (< (+ COUNT DUM) BYTES)) (SETQ IMAGE T) (RETURN NIL)))
+		   (SETQ DUM (// DUM 2.))
+		   (DO ((M 0. (1+ M))) ((= M DUM))
+		       (IDPB 255. WORKING-ARRAY) (IDPB 0 WORKING-ARRAY)
+		       (SETQ COLACC (- COLACC 255.) COUNT (+ COUNT 2.)))
+		   (IDPB COLACC WORKING-ARRAY) (SETQ COUNT (1+ COUNT))
+		   (AND EXITP (RETURN NIL))
+		   (SETQ WORD (BOOLE 6. (LSH WORD NUM) XORMASK) 
+			 COLACC 0. COLOUR (NOT COLOUR)))
+	       (AND IMAGE (RETURN NIL)))
+	   (COND (IMAGE (DO ((I 0. (1+ I)) (WORDACC 2._4. WORD) (WORD)) ((> I WIDTH))
+			    (SETQ WORD (COND ((= I WIDTH) 0.) (T (CIRC (TV LINENO I)))))
+			    (STORE (WORKING-ARRAY (1+ I))
+				   (BOOLE 6. (LSH WORDACC 16.)
+					  (LSH (LSH WORD -20.) 4.)))
+			    (STORE (WORKING-ARRAY (+ I 3)) (CIRC (TV LINENO I))))
+			(SETQ COUNT (+ WIDTH 2.) WIDTH (+ TV-SIZE-X 2.))
+			(DO ((I COUNT (1+ I))) ((= I WIDTH))
+			    (STORE (WORKING-ARRAY (1+ I)) 0.))
+			(SETQ COUNT XGP-WIDTH))
+		 (T (SETQ WIDTH COUNT)
+		    (DO ((I 0. (1+ I))) ((= I WIDTH))
+			(STORE (WORKING-ARRAY I) (WORKING-ARRAY (1+ I))))))
+	   (COND ((NOT (= COUNT 0.))
+		  (STORE (WORKING-ARRAY 0.)
+			 (+ (LSH COUNT 21.) (LSH LINENO 4.)))
+		  (DO ((I 1. (1+ I))) ((= I WIDTH))
+		      (SETQ WORD (WORKING-ARRAY I))
+		      (STORE (WORKING-ARRAY I)
+			     (+ (LSH (BOOLE 1. WORD MASK1) -8.)
+				(LSH (BOOLE 1. WORD MASK2) 8.))))
+		  (*REARRAY 'WORKING-ARRAY 'FIXNUM WIDTH)
+		  (FILLARRAY SPOOL-FILE 'WORKING-ARRAY)
+		  (COND (IMAGE (DO ((I WIDTH (1+ I))) ((= I XGP-WIDTH))
+				   (OUT SPOOL-FILE 0.)))))))
+       (*REARRAY 'WORKING-ARRAY 'FIXNUM 1.))
+
+(DECLARE (EVAL (READ)))
+(SETQ MAX-SPOOL-LOAD 400000. OVER-LOAD-WAIT-TIME 5 MAX-FILE-SIZE 50000.)
+
+(DEFUN CHECK-SPOOL-LOAD ()
+(COMMENT
+       (COND ((> (FILEPOS SPOOL-FILE) #MAX-FILE-SIZE)
+	      (RENAME SPOOL-FILE OUTPUT-FILE)
+	      (CLOSE SPOOL-FILE)
+	      (SETQ SPOOL-FILE
+		    (OPEN '|DSK:GLPT;.GLPT. OUTPUT| '(OUT DSK FIXNUM BLOCK))))))
+; FIX THIS LOOP FOR DSK OUTPUT CASES
+       (DO ((I))
+	   ((NULL (PROBEF '((DSK |.GLPT.|) [GLPT] >))))
+	   (SETQ I (APPLY '+ (MAPCAR 'CADDR
+				     (DIRECTORY '(((DSK |.GLPT.|) [GLPT] *))
+						'(WORDS)))))
+	   (COND ((< I #MAX-SPOOL-LOAD) (RETURN T)))
+	   (SLEEP #OVER-LOAD-WAIT-TIME)))
+
+(DEFUN CHECK-FILE-SIZE ()
+       (COND ((OR (> (FILEPOS SPOOL-FILE) #MAX-FILE-SIZE) (EQ OUTPUT-TYPE 'XGP))
+	      (COND ((EQ 'GOULD OUTPUT-TYPE) (FORCE-LINE-SPACES) (FORCEOUT)))
+	      (RENAME SPOOL-FILE OUTPUT-FILE)
+	      (CLOSE SPOOL-FILE)
+	      (SETQ SPOOL-FILE
+		    (OPEN '|DSK:GLPT;.GLPT. OUTPUT| '(OUT DSK FIXNUM BLOCK))))))
+
+(DEFUN SPOOL-RESET ()
+       (SETQ TO-BE-PROCESSED NIL) (RECORD-Q)
+       (COND ((AND MAIL-FILE (STATUS FILEMODE MAIL-FILE)) (CLOSE MAIL-FILE)))
+       (COND ((AND IN-FILE (STATUS FILEMODE IN-FILE)) (CLOSE IN-FILE)))
+       (COND ((AND SPOOL-FILE (STATUS FILEMODE SPOOL-FILE)) (CLOSE SPOOL-FILE)))
+       (COND ((PROBEF '|DSK:GLPT;GLMAIL <|) (DELETEF '|DSK:GLPT;GLMAIL <|)))
+       (COND ((PROBEF '|DSK:.GLPT.;.GLPT. OUTPUT|)
+	      (DELETEF '|DSK:.GLPT.;.GLPT. OUTPUT|)))
+       (COND ((PROBEF '|DSK:GLPT;[QUEUE FILE|) (DELETEF '|DSK:GLPT;[QUEUE FILE|)))
+       (DO NIL ((NOT (PROBEF '|DSK:.GLPT.;[GLPT] >|))) (DELETEF '|DSK:.GLPT.;[GLPT] >|))
+       (THROW NIL TOP))
+
+(SETQ CLI-MESSAGE 'CLI-MESSAGE-HANDLER ALARMCLOCK 'ALARM-HANDLER)
+
+(DEFUN CLI-MESSAGE-HANDLER (X)
+       (SETQ X X)	; ALWAYS NIL
+       (SETQ MAIL-FILE (OPEN '|CLA:| '(CLA BLOCK IN)))
+       (SETQ SENDER (CADR (TRUENAME MAIL-FILE)) AT 'MC)
+       (PROCESS-SPECS)
+       (CLOSE MAIL-FILE))
+
+(DEFUN ALARM-HANDLER (TYPE)
+       (SETQ TYPE TYPE)
+       (COND ((PROBEF '|DSK:GLPT;GLMAIL >|) (PROCESS-MAIL)))
+       (ALARMCLOCK 'TIME #MAIL-TIME))
+
+(DEFUN FORCEOUT () (DECLARE (FIXNUM LASTI))
+       (*REARRAY 'OUTARRAY 'FIXNUM (1+ (BOOLE 1 777777 (OUTARRAY 0))))
+       (STORE (OUTARRAY 0) #NOP-WORD)
+       (FILLARRAY SPOOL-FILE 'OUTARRAY)
+       (*REARRAY 'OUTARRAY 'FIXNUM #OUTSIZE)
+       (FILLARRAY 'OUTARRAY '(#NOP-WORD))
+       (STORE (OUTARRAY 0) #(+ 36._30. 8_24. 8._18. 1)))
+
+
+(Comment Output to persons)
+
+(declare (fixnum num))
+
+;; To the maintainers: internal bug report
+(DEFUN MAIL-ERROR (X)
+       (COND ((EQUAL '|FILE NOT FOUND.  | X))
+	     ((NULL ^W) (BREAK MAIL-ERROR T))))
+
+;; To the user: visible bug report
+;;; Operator for reporting a user's errors to him
+
+(defun report-failure (loser msg-list)
+      ((lambda (outfiles ^r ^w)
+	       (mailout '|FROM-JOB:| (list (status jname)))
+	       (mailout '|FROM:| (list '|X"| (status uname)))
+	       (mailout '|CLAIMED-FROM:| (list (status xuname)))
+	       (mailout '|TO:| (list '|S"| loser))
+	       (mailout '|TEXT;-1/
+|			msg-list)
+	       (close (car outfiles)))
+       (list (open '|DSK:.MAIL.;MAIL >| '(out ascii)))
+       t t))
+
+(defun mailout (name values) (princ name) (mapc 'princ values) (terpri))
+;; Useful auxiliary functions
+
+(defun pluralizer? (num)	;Used like: (princ number) (princ '| dollar|)
+       (cond ((= num 1) '||)	;		(princ (pluralizer? num))
+	     (t '|s|)))
+
+(COMMENT LAP CODE FOR ILDB AND IDPB FUNCTIONS)
+; TAKE ADVANTAGE OF PDP-10 HARDWARE.
+
+(LAP 	DPWORD SUBR)
+(ARGS	DPWORD (NIL . 1))
+	(PUSH P (% 0 0 FIX1))	; NCALLABLE
+	(HRRZ D (ARRAY OUTARRAY)) ; BYTE POINTER CAN INDEX THRU D
+	(HRRZ R 0 D)		; CHECK COUNT
+	(ADDI R 4)
+	(CAMGE R -1 D)
+	(JRST 0 DP1)
+	(PUSH P A)
+	(CALL 0 'FORCEOUT)
+	(POP P A)
+	(HRRZ D (ARRAY OUTARRAY)) ; BYTE POINTER CAN INDEX THRU D
+DP1	(MOVE TT 0 A)
+	(PUSH P TT)
+	(PUSHJ P DPBYTE)
+	(POP P TT)
+	(LSH TT -10)
+DPBYTE	(ANDI TT 377)
+	(CAIG TT 177)		; CHECK FOR SPECIAL CODES
+	(JRST 0 IDPBY)
+	(CAIN TT #BEGIN)	; CHANGE THIS QUOTING IF GOULD BECOMES A SOFTWARE TTY?!?
+	(JRST 0 3QOT)
+	(CAIN TT #TDQOT)
+	(JRST 0 3QOT)
+	(CAIN TT #TDORS)
+	(JRST 0 3QOT)
+	(CAIN TT #EOF)
+	(JRST 0 3QOT)
+	(CAIE TT #ACK)
+	(JRST 0 1QOT)
+3QOT	(PUSH P TT)
+	(MOVEI TT #TDQOT)
+	(PUSHJ P 1QOT)
+	(SKIPA 0 A)
+1QOT	(PUSH P TT)
+	(MOVEI TT #TDQOT)
+	(PUSHJ P IDPBY)
+	(POP P TT)
+IDPBY	(IDPB TT 0 D)		; DEPOSIT THE BYTE
+	(POPJ P)
+()
+
+(LAP	IDPB SUBR)
+(ARGS	IDPB (NIL . 2))
+	(PUSH P (% 0 0 FIX1))	; NCALLABLE
+	(MOVE TT 0 A)
+	(HRRZ D 1 B)
+	(IDPB TT 0 D)		; DEPOSIT THE BYTE
+	(POPJ P)
+()
+
+; ASSUMES AN ARRAY AS ABOVE.  RETURNS A BYTE
+(LAP	ILDB SUBR)
+(ARGS	ILDB (NIL . 1))
+	(PUSH P (% 0 0 FIX1))	; NCALLABLE
+	(HRRZ D 1 A)
+	(ILDB TT 0 D)
+	(POPJ P)
+()
+
+(LAP	ILDB* SUBR)
+(ARGS	ILDB* (NIL . 2))
+	(PUSH P (% 0 0 FIX1))	; NCALLABLE
+	(Hllz d 0 b)
+	(ILDB TT D)		; ASSUMES BYTE POINTER INDEXES THRU D
+	(POPJ P)
+()
+
+(LAP	SET-UNAME SUBR)
+(ARGS	SET-UNAME (NIL . 0))
+	(*SUSET 0 (% 0 0 R 54))	; GET .OPTION USET
+	(MOVEI A 'NIL)
+	(TLNE R 10000)			; SKIP IF NOT UNDER A DDT
+	(POPJ P)
+WAIT	(*SUSET 0 (% 0 0 R 65))	; GET SUPERIOR'S INDEX
+	(AOJN R WAIT)
+	(MOVEI A 'T)
+	(*SUSET 0 (% 0 0 (% (SIXBIT GLPTR)) 400004))	; CHANGE UNAME TO GLPTR
+	(*SUSET 0 (% 0 0 (% 200000) 400002))	; %TBNVR TELL IT NOT TO HANG WAITING FOR A TTY
+	(POPJ P)
+()
+
+; CHECK ON EXISTENCE OF ANOTHER SPOOLER
+(LAP	CHECK-SPOOLER SUBR)
+(ARGS	CHECK-SPOOLER (NIL . 0))
+	(MOVEI A 'T)
+	(*CALL 0 OPEN)			; TRY TO OPEN USR DEVICE TO SPOOLR
+	(POPJ P)
+	(*SUSET 0 (% 0 0 TT 54))	; GET OPTION WORD
+	(*USET 11 (% 0 0 T 7))		; CHECK STOP BIT
+	(TLNE T 10000)
+	(JRST 0 DEAD)			; STOPPED, SO HE MUST BE DEAD
+	(TLNN TT 10000)			; ARE WE UNDER A DDT?
+	(JRST 0 PUNT)			; NO
+	(MOVEI A 'NIL)			; VALRET :KILL ETC. UPON RETURN
+	(POPJ P)
+PUNT	(*LOGOUT)
+	(*BREAK 16 40000)		; LOGOUT OR PUNT
+DEAD	(*USET 11 (% 0 0 T 23))		; FLUSH HIM
+	(*GUN T 0)
+	(*CLOSE 11)
+	(POPJ P)
+OPEN	(SETZ)
+	(SIXBIT OPEN)
+	(0 0 11 1000)
+	(0 0 14 5000)
+	(0 0 (% (SIXBIT USR)))
+	(0 0 (% (SIXBIT GLPTR)))
+	(SETZ 0 (% (SIXBIT SPOOLR)))
+()
+
+

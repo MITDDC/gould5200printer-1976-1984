@@ -1,0 +1,205 @@
+(COMMENT SPOOLER FOR LPT STYLE PRINTING OF ASCII FILES)
+
+(DECLARE (SPECIAL IN-FILE WRAP-AROUND LPT-COMMANDS)
+	 (*EXPR DIRECTORY BEGIN-PAGE)
+	 (fixnum (dpword fixnum) byte word)
+	 (array* (fixnum (linearray 270.))))
+
+(DECLARE (EVAL (READ)))
+(FASLOAD LSPMAC FASL DSK JLK)
+
+(DECLARE (EVAL (READ)))
+(SETSYNTAX '/& 'MACRO '(LAMBDA () (+ 1_17 (READ)))) ; PRINTER COMMANDS
+
+;;;	Special printer codes
+
+(DECLARE (EVAL (READ)))
+(SETQ ACK 301 TDQOT 215 TDORS 214 TDCLR 216 TDNOP 210 BEGIN 205 EOF 206 HOME &200
+      LINE+ &201 INIT &4 ENABLE &3 FINISH &70177 FORM-FEED &0 CUT-PAPER &2 GMODE &1
+      LAST-LINE &5 ENABLE-INTS &6 DISABLE-INTS &7 NEW-PAGE &40000 GRAPHICS-MODE 10000
+      REPEAT &301 TERMIN &302 MAX-SLEEP-PERIODS 120. SPOOL-SLEEP-TIME 5. MAIL-TIME 5.)
+
+(DECLARE (EVAL (READ)))
+(SETQ BOTTOM-MARGIN 2 TOP-MARGIN 5 DOLLAR 44 SPACE 40 CARET 136
+      PAGE-SIZE 62. MAX-LINE-SIZE 132.)
+
+
+(Comment Spooler for ascii files)
+
+(DECLARE (EVAL (READ)))
+
+;;; @@@@@@@		THE OLD CODE	   @@@@@@@
+
+(SETQ BOTTOM-MARGIN 2 TOP-MARGIN 5 DOLLAR 44 SPACE 40 CARET 136
+	PAGE-SIZE 62. MAX-LINE-SIZE 132.)
+
+;; Implement skip for this mode.  Page size?, Margins (top, side)
+(DEFUN ASCII-PRINT (FILE)
+       (SETQ IN-FILE (OPEN FILE '(IN DSK IMAGE)))
+       (TOP-PAGE)
+       (DO ((CH (TYI IN-FILE) (TYI IN-FILE)) (LCNT 0)
+	    (I 0 (1+ I)) (ID 1) (OVER-RUN)
+	    (CC (CADDAR (DIRECTORY (LIST (TRUENAME IN-FILE)) '(CHARACTERS))))
+	    (WORDC (CADDAR (DIRECTORY (LIST (TRUENAME IN-FILE)) '(WORDS)))))
+	   ((= I CC) (FINISH-LINE ID) (HOME-DOWN LCNT) (CLOSE IN-FILE))
+	   (DECLARE (FIXNUM ID CH CC WORDC LCNT))
+	   (COND ((NOT (AND (OR (= 3 CH) (= 14 CH))
+			    (NOT (> WORDC (1+ (// (FILEPOS IN-FILE) 5))))))
+		  (COND ((= 33 CH) (SETQ CH #DOLLAR)))
+		  (COND ((OR (= 14 CH) (= 12 CH))
+			 (FINISH-LINE ID)
+			 (SETQ ID 1 LCNT (1+ LCNT)) OVER-RUN NIL))
+		  (COND ((OR (= 14 CH) (= #PAGE-SIZE LCNT))
+			 (ASCII-FF LCNT) (SETQ LCNT 0))
+			((OR (= 15 CH) (= 12 CH) OVER-RUN))
+			((= 11 CH)
+			 (DO I (- (MIN #MAX-LINE-SIZE (+ 11 (BOOLE 4 (1- ID) 7))) ID)
+			     (1- I) (= 0 I) (STORE (LINEARRAY ID) #SPACE)
+			     (SETQ ID (1+ ID))))
+			((< CH 40)
+			 (STORE (LINEARRAY ID) #CARET)
+			 (STORE (LINEARRAY (SETQ ID (1+ ID))) (+ 100 CH))
+			 (SETQ ID (1+ ID)))
+			(T (STORE (LINEARRAY ID) CH) (SETQ ID (1+ ID))))))
+	   (COND ((OR (AND WRAP-AROUND (> ID #(1- MAX-LINE-SIZE)))
+		      (= ID #MAX-LINE-SIZE))
+		  (COND ((NOT WRAP-AROUND)
+			 (STORE (LINEARRAY ID) 174)
+			 (SETQ ID (1+ ID))))
+		  (FINISH-LINE ID) (SETQ ID 1 LCNT (1+ LCNT))
+		  (SETQ OVER-RUN WRAP-AROUND)))))
+(COMMENT
+(DECLARE (special page-rev))	;again, should go to general flag hack section
+;;;Remember to set up flag hackery for page-rev!!
+(SETQ PAGE-REV NIL) 		; Just so this can compile
+
+(defun ascii-print (file)
+	(do ((numcop copies (1- numcop))	;Handle here for speed
+	     (page-locs (cond (page-rev (ascii-print1 file t nil skip))
+			      (t nil))))
+	    ((= numcop 0))
+	    (ascii-print1 file nil page-locs (cond (page-rev 0) (t skip))))
+	t)
+
+;; Pass1 produces as value of a-p1 a list of
+;;  the locations of the beginnings of pages reversed,
+;;   which pass2 takes as a third argument.
+;; In the two-pass version, Skip does its dirty work
+;;  on the first pass, as can be seen above in ascii-print
+
+
+(defun ascii-print1 (file pass1? page-locs skip)
+       (setq in-file (open file '(in dsk image)))
+       (cond ((not pass1?)
+	      (top-page)				;Remember that there is no ^l
+	      (cond (page-rev (filepos in-file (car page-locs)))))) ;at start of file.
+       (do ((ch 0 (prog2 t (tyipeek 14 in-file)
+			   (tyi in-file))) 		;Note that first time through
+	    (pages-to-skip skip (1- pages-to-skip)))	; this DO does nothing
+	   ((or (zerop pages-to-skip) (= ch 3))
+	    (cond ((= ch 3) (user-error '|Skip fell off end after |
+					(setq ch (- skip pages-to-skip))
+					'| page|
+					(pluralizer? ch)))))
+	   (declare (fixnum pages-to-skip)))
+       (do ((ch (tyi in-file) (tyi in-file))
+	    (lcnt 0)					;Line count
+	    (i 0 (1+ i))				;# of chars read
+	    (id 1)					;Position in line--chars
+	    (pos 0)					;Pos in bits for vrbl-width
+	    (over-run)					;Page overrun?
+	    (cc (file-property in-file 'characters))	;True character count
+	    (wordc (file-property in-file 'words))	;For eof check
+	    (page-boundary-locs '(0)))			;List of page boundary locations
+	   ((= i cc)
+	    (cond ((not pass1?) (finish-line id) (home-down lcnt)))
+	    (close in-file)
+	    page-boundary-locs)
+	   (declare (fixnum id ch cc wordc lcnt num))
+	   (cond ((not (and (or (= 3 ch) (= 14 ch))	;If at eof, ^C and ^L ignored
+			    (not (> wordc (1+ (// (filepos in-file) 5))))))
+		  (cond ((= 33 ch) (setq ch #dollar)))
+		  (cond ((or (= 14 ch) (= 12 ch))
+			 (or pass1? (finish-line id))
+			 (setq id 1 lcnt (1+ lcnt)) over-run nil))
+		  (cond ((or (= 14 ch) (= #page-size lcnt))
+			 (cond (pass1? (ascii-ff lcnt))
+			       (t (setq page-boundary-locs (cons (filepos in-file)
+								 page-boundary-locs)))))
+;;			 (or pass1? (ascii-ff lcnt)) (setq lcnt 0)
+			((or (= 15 ch) (= 12 ch) over-run))
+			((= 11 ch)
+			 ((lambda (num)			;number of spaces for a tab
+				  (or pass1? 
+				      (do ((i id (1+ i)) (imax (+ id num)))
+					  ((= i imax))
+					  (store (linearray i) #space)))
+				  (setq id (+ id num)))
+			  (- (min #max-line-size (+ 11 (boole 4 (1- id) 7))) id)))
+			((< ch 40)
+			 (or pass1? (progn (store (linearray id) #caret)
+					   (store (linearray (1+ id)) (+ 100 ch))
+					   (setq id (+ id 2)))))
+			(t (or pass1? (store (linearray id) ch))
+			   (setq id (1+ id))))))
+	   (cond ((or (and wrap-around (> id #(1- max-line-size)))
+		      (= id #max-line-size))
+		  (cond ((not wrap-around)
+			 (or pass1? (store (linearray id) 174))
+			 (setq id (1+ id))))
+		  (or pass1? (finish-line id))
+		  (setq id 1 lcnt (1+ lcnt))
+		  (setq over-run wrap-around)))))
+
+
+(defun file-property (file prop) (caddar (directory (list (truename file))
+						    (list prop))))
+)
+
+(DEFUN FINISH-LINE (ID)
+       (COND ((= 1 ID) (LINE-FEED))
+	     (T (DPWORD (// ID 2))
+		(DO ((I 1 (1+ (1+ I))))
+		    ((NOT (< I ID)))
+		    (DPWORD (+ (LSH (LINEARRAY I) 10)
+			       (OR (AND (NOT (< (1+ I) ID)) #SPACE)
+				   (LINEARRAY (1+ I)))))))))
+
+(DEFUN ASCII-FF (LC) (HOME-DOWN LC) (TOP-PAGE))
+
+(DEFUN HOME-DOWN (LC)
+   (LAMBIND ((X (- #(+ BOTTOM-MARGIN PAGE-SIZE) LC)))
+	     (COND ((> X 0) (DPWORD #REPEAT) (DPWORD X) (LINE-FEED) (DPWORD #TERMIN)))))
+
+(DEFUN TOP-PAGE ()
+    (BEGIN-PAGE)
+    (COND ((> #TOP-MARGIN 0)
+	   (DPWORD #REPEAT)
+	   (DPWORD #TOP-MARGIN)
+	   (LINE-FEED)
+	   (DPWORD #TERMIN))))
+
+(DEFUN LINE-FEED NIL 
+       (DPWORD 1) (DPWORD #(+ SPACE (LSH SPACE 10)))) ;(DPWORD #LINE+)
+
+(array charwidth fixnum 200)
+
+((lambda (between-do setwd)
+	 (between-do 40 57 '(setwd i 8.))
+	 (between-do 60 77 '(setwd i 12.))
+	 (between-do 100 137 '(setwd i 16.))
+	 (between-do 140 177 '(setwd i 12.)))
+ (mapcar '(lambda (one-size-list)
+	   (mapcar '(lambda (char)
+			    (setwd char (car one-size-list)))
+		   (cdr one-size-list)))
+	 '((8. 22 61 72 73 111 133 135 140 146 151 152 154 164 173 174 175)
+	   (12. 23 42 43 53 55 57 112 114)
+	   (16. 24 40 44 45 46 52 60 64 77 155 167 177)))
+ (lambda (lowlim highlim form)		;crock!
+	 (do ((i lowlim (1+ i)))
+	     ((> i highlim))
+	     (eval form)))
+ (lambda (ch w) (store (charwidth ch) w) t))
+(gctwa)
+

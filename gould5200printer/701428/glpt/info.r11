@@ -1,0 +1,161 @@
+
+JLK@MIT-MC 09/21/77 18:24:07
+To: PLASMA-GROUP at MIT-MC
+In order that we be able to use the new TELNET, the BREAK key function has
+been changed.  To reset the allocation for your terminal (i.e. unhang it)
+you now type TOP ESC  (that is, type the ESC key while holding down TOP).
+To restart the PDP-11 type Control Top ESC.  Note, restarting the PDP-11
+this way should be done cautiously, as it can cause the PDP-11 to crash
+(particularly if the GOULD is printing at the time).
+   JLK@MIT-MC 06/01/77 09:21:00
+To: MACRAK at MIT-MC
+CC: JLK at MIT-MC, CFFK at MIT-MC, (FILE [GLPT;INFO R11]) at MIT-MC
+We should probably have a hack for the GTV's so that the origin for
+writing characters changes periodically to make the phosphor on the monitors
+wear more uniformly (i.e. move the origin up or down 1-2 raster lines).
+
+JLK@MIT-MC 05/31/77 12:55:13
+To: CFFK at MIT-MC, (FILE [GLPT;INFO R11]) at MIT-MC
+CC: MACRAK at MIT-MC
+If you happen to notice the Ann Arbor losing again (with cursor posing losing)
+hardwarewise, try checking that the cables between the AA's and the PDP-11 are
+plugged in correctly.  That was the problem this morning and the symptoms were
+identical to those we had once before (it was my fault this time...)
+
+CFFK@MIT-MC 04/21/77 23:50:10
+To: INFO-PLASMA at MIT-MC
+Correct way to set the speed to 40K on the Imlac line is
+:LSPEED 16 2
+
+JLK@MIT-MC 04/18/77 17:18:58
+To: INFO-R11SYS at MIT-MC
+To find out the status of the GOULD's spooler and unspooler programs,
+you can now do 
+:P ;JGLPTR
+and you will see the status display for the job tree of the spooler and
+unspooler.  If you see your own job tree instead, this means that no
+unspooler or spooler exists, so do 
+:SPOOLR
+:UNSPLR
+If you do not see a job with a UNAME of GLPTR and a JNAME or SNAME of SPOOLR,
+then do :SPOOLR
+If you do not see a job with a UNAME of GLPTR and a JNAME or SNAME of UNSPLR,
+then do :UNSPLR
+
+Another common problem is that the PDP-11 accidently logs itself in
+on T23.  If you do TTY and see
+T23  ___0nn ...   rather than
+D23  GLPT-U ...  then gun down the HACTRN on T23.
+Hopefully this problem will not occur as frequently when the next ITS
+is released.
+
+JLK@MIT-MC 03/22/77 13:31:35
+To: INFO-R11 at MIT-MC
+O11LOD NOW LOADS RTTY11;RTTY11 SAVE 
+
+JLK@MIT-MC 03/22/77 12:44:21
+To: INFO-R11 at MIT-MC
+gtv's no longer need +%TOIML and so tty reset has been changed accordingly 
+
+JLK@MIT-MC 03/21/77 10:19:52
+To: INFO-R11 at MIT-MC
+DEFAULT FILE CHANGES:
+R11MUX 200 is the most recent version of R11MUY and seems to work ok.
+R11MUX BIN, LIST have been updated accordingly.
+GLPT;TTY RESET now applies to the new program only.  TTY ORESET applies
+to the pre-TV version.  To go from the old to the new, XFILE the file
+TTY FIX.  To go from the new back to the old program, XFILE TTY ORESET.
+TTY RESET should only be used when I.T.S. initially comes up.
+The loader how knows about N11LOD which loads RTTY11;RTTY11 >.
+O11LOD loads RTTY11;RTTY11 <.  R11LOD loads RTTY11;RTTY11 LOAD.
+
+CFFK@MIT-MC 03/18/77 17:40:50
+To: INFO-PLASMA at MIT-MC
+While the Gould is done, don't forget about the Tektronix copier.
+It has new paper in it and is producing reasonable copies.  Don't
+forget to let it warm up (for 5-10 minutes), and to switch it off
+after you've finished.  The first copy often gets stuck;  just
+open up the metal plate inside the machine and remove the stuck
+piece of paper and try again.
+
+CFFK@MIT-MC 03/09/77 21:29:58
+To: INFO-R11 at MIT-MC
+spoolr is now SPGLPT < dumped out in OL.
+
+
+JLK@MIT-MC 01/22/77 11:27:59
+To: BROM at MIT-MC, CFK at MIT-MC, MACRAK at MIT-MC
+PLDRW;CBLBOX WIRING describes the cable box (per office) wiring.
+PLDRW;BLDG26 CABLE describes the cable to 26-209 (Coppi's group)
+PLDRW;BLDG38 CABLE describes the cable between MC and 38-246.
+
+PLDRW should be used from now on as a central place for all
+hardware documentation for our group.  Also, these files will
+be listed and put in the file drawer in the computer room.
+I will also move the IMLAC hardware documentation over to
+that directory (or make links).
+
+CFK@MIT-MC 01/11/77 00:14:41 Re: Gould queuing by @
+To: RMS at MIT-MC
+CC: JLK at MIT-MC, CFK at MIT-MC
+Yes there is a spooler for the Gould and it understands XGP commands.
+We are currently using the Gould in two modes:
+1]  One that utilizes the hardware font in the Gould.  It then looks
+much like a lineprinter (I think the vertical and horizontal heights
+are both the same as a standard lineprinter), although the paper
+comes out as single sheets, so double title pages are unnecessary.
+This is called by :GTPL <file-spec>/H
+2]  One that exactly mimics the XGP (uses the same fonts, XGP commands
+etc).  This is called by :GTPL <file-spec>
+For both modes an additional /K flag will delete <file-spec>.  If you
+like you can set things going using the Mailer, since :GTPL <text>
+is equivalent to :MAIL GLPTR
+_<text><cr>^C
+(Most long listing we get in the Hardware font since this is many times
+quicker.  However both modes would be nice to have from @.)
+
+RMS@MIT-AI 01/10/77 23:47:47
+To: CFK at MIT-AI, JLK at MIT-MC
+Does the GLPT understand XGP commands?
+Is there a spooler for it?
+If so, I am willing to make /X[GLPT] for @.
+
+
+    
+CFK@MIT-MC 01/09/77 14:38:00 Re: Comment about Hardware documentation
+To: MACRAK at MIT-MC
+CC: CFK at MIT-MC
+It seems as if your description of the various devices would be a bit
+clearer if you distinguished what people have to know in the normal
+course of operation (e.g. how to turn on the devices and type various
+characters) vs. what has to be done to get things back in their default
+state (re-loading the 11, setting the speeds of the terminals).  If 
+there were strong encouragement to leave the terminals in their default
+state (e.g. anyone who wants to dial up somewhere at 300 baud should
+normally reset things after he's finished), then the latter part of the
+documentation could be relegated to an appendix, and most people
+wouldn't have to concern themselves with it.
+  
+CFK@MIT-MC 01/09/77 14:20:00 Re: Changing paper for the Gould.
+To: PLASMA-GROUP at MIT-MC
+When you change the paper in the Gould, please check the water level
+in the plastic box in paper well.  This should be at least 1/2 full of
+water.  Top it up with my watering can, if it's not.  (The purpose of
+this is to keep the paper slightly humid.  If it dries out the
+quality of the printing goes down.)  Bug MACRAK to finish documenting 
+the hardware if you want to find out how to change the paper.
+
+CFFK@MIT-MC 03/09/77 20:39:54
+To: MACRAK at MIT-MC, (FILE [GLPT;INFO R11]) at MIT-MC
+Half the problems with the Gould are traceable to the fact that the
+paper has gone dry.  It is imperative to keep the water dish in the
+Gould sufficiently full.  The water should be completely changed
+periodically (once a week/fortnight?) and the wick replaced.
+
+JLK@MIT-MC (Sent by CFFK@MIT-MC) 03/03/77 17:52:10
+To: INFO-R11 at MIT-MC
+This is the first message for a mailing list concerning operation of the
+remote pdp-11 of the plasma physics group.  These messages are also
+recorded in DSK:GLPT;INFO R11.  An alternate mailing list for mailing
+to the whole plasma group is INFO-R11SYS.
+

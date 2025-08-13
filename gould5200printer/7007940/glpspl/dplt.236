@@ -1,0 +1,367 @@
+;;; DPLT Interpreter for the Gould Spooling System
+
+(Comment DPLT Interpreter for the Gould SPooling system)
+
+(declare (special dplt-rot dplt-lftmar dplt-botmar dplt-font dplt-current-font
+		  dplt-scale dplt-diamond-size in-file clear-page-buffer
+		  dplt-char-width dplt-char-height dplt-thick nocut
+		  current-font current-baseline current-rot current-height
+		  current-width dplt-xorg dplt-yorg dplt-defaults
+		   dplt-pass pb-size-x pb-size-y x-offset y-offset
+		   item-type x-y-array)
+	 (fixnum ch word dplt-rot x-offset y-offset last-x last-y dplt-char-width
+		 (dplt-x fixnum fixnum) (dplt-y fixnum fixnum))
+	 (notype (dplt-line fixnum fixnum fixnum fixnum) (gtyo fixnum)
+		 (pb-linen fixnum fixnum fixnum fixnum fixnum)
+		 (draw-text fixnum) (draw-pad fixnum) (draw-char fixnum)
+		 (dplt-item1 fixnum) (draw-ascii fixnum) (decode-ascii fixnum)
+		 (decode-sixbit fixnum))
+	 (*expr font clear-page-buffer output-page-buffer switch-font pb-linen gtyo
+		font-init set-file-info set-filepos-info decode-ascii decode-sixbit
+		reconfigure-page-buffer-array)
+	 (*lexpr user-error))
+
+(eval-when (eval compile)
+	   (cond ((not (status feature lspmac))
+		  (fasload lspmac fasl dsk glpspl))))
+
+(setq x-y-array (array nil fixnum 2))	;2 element array for x,y values
+
+;;;  Main routine for processing DPLT files
+
+(defun process-dplt-file (commands)
+   (setq in-file (open in-file '(in dsk fixnum)))
+   (set-file-info)
+   (process-dplt-commands commands)
+   (dplt-init)				;initialize fonts, variables
+   (dplt-prescan)			;scan file for range of the plot
+   (in in-file)				;skip first word (version number)
+   (do ((nocut nil t)
+	(dplt-pass '(1 2) (cdr dplt-pass)))
+       ((null dplt-pass))
+       (unless				;if *catch returns nil, error occurred
+	(*catch 'dplt-error
+		(dplt-item)		;read an item to get things going
+		(do nil
+		    ((eq 'end item-type) T)
+		     (set-filepos-info)
+		     (caseq item-type
+			    (start-vector (draw-vector)) 
+			    (start-other
+			     (let ((word (in in-file)))
+				  (caseq (lsh word -18.)
+					 (0 (draw-text word))
+					 (2 (draw-diamond))
+					 (4 (draw-pad word))
+					 (t (*throw 'dplt-error nil))))))))
+	(user-error '|invalid data in file, dplt aborted|)
+	(setq clear-page-buffer t))		        ;flush output
+       (dplt-frame)	                	;put a frame and title on the drawing
+       (unless clear-page-buffer (output-page-buffer))	;put out last page, if any.
+       (when (= 1 (car dplt-pass))
+	     (caseq dplt-rot
+		    ((0 2)
+		     (return nil))	;return from the outer DO
+		    ((1 3)
+		     (filepos in-file 1)
+		     (clear-page-buffer)
+		     (setq dplt-yorg (- dplt-yorg 1500.))))))
+   (close in-file))
+
+;;; Initialize variables, fonts, etc.
+
+(setq dplt-defaults
+      '((dplt-scale  . 1.0)
+	(dplt-thick  . 1)
+	(dplt-botmar . 0)
+	(dplt-lftmar . 0)
+	(dplt-rot    . 3))
+      box-parameters-8x11
+      '(10. 50. 2100. 1650. 100. 1300. 1700. 58. 80. 750. 1350. 1750.)
+      box-parameters-11x15
+      '(50. 0. 2940. 2110. 80. 2000. 2500. 20. 100. 1200. 2080. 2580.))
+
+(declare (special box-parameters box-parameters-8x11 box-parameters-11x15))
+
+(defun dplt-init ()
+   (let ((origin
+	  (caseq dplt-rot
+		 (0 `(,dplt-lftmar ,(- 1700. dplt-botmar) 1700.
+				   ,box-parameters-8x11))	;8x11
+		 (1 `(,(- (* pb-size-y 32.) dplt-botmar)	;11. x 15.
+		      ,(- 3000. dplt-lftmar) 1500. ,box-parameters-11x15))
+		 (2 `(,(- (* pb-size-y 32.) dplt-lftmar) ,dplt-botmar
+		       1700. ,box-parameters-8x11))
+		 (3 `(,dplt-botmar ,dplt-lftmar 1500. ,box-parameters-11x15))
+		 (T (user-error '|Invalid rotation argument. Default to 3.|)
+		    `(,dplt-botmar ,dplt-lftmar 1500. ,box-parameters-11x15)))))
+	(desetq (dplt-xorg dplt-yorg pb-size-x box-parameters) origin))
+   (reconfigure-page-buffer-array pb-size-y pb-size-x)
+   (clear-page-buffer)				;initialize the PB array
+   (font-init)
+   (let ((rot dplt-rot) (rot+  (boole 1 3 (1+ dplt-rot))))
+	(font 0.  '((dsk fonts) 13fg kst) rot)
+	(font 20. '((dsk fonts) 13fg kst) rot+)
+	(font 1.  '((dsk fonts) 20fg kst) rot)
+	(font 21. '((dsk fonts) 20fg kst) rot+)
+	(font 2.  '((dsk fonts) 25fg kst) rot)
+	(font 22. '((dsk fonts) 25fg kst) rot+)
+	(font 3.  '((dsk fonts) 33fr kst) rot)
+	(font 23. '((dsk fonts) 33fr kst) rot+)
+	(font 4.  '((dsk fonts) 40vshd kst) rot)
+	(font 24. '((dsk fonts) 40vshd kst) rot+))
+   (setq dplt-current-font -1
+	 dplt-diamond-size (fix (*$ 3.0 dplt-scale)))
+   t)
+
+(defun process-dplt-commands (commands)
+   (mapcar (function (lambda (l) (set (car l) (cdr l)))) dplt-defaults)
+   (do ((l commands (cdr l)) (command) (val))
+       ((null l))
+       (desetq (command . val) (car l))
+       (caseq command
+	      ((thick botmar lftmar rotate)
+	       (if (fixp val) (set (cdr (assoc command
+					       '((thick . dplt-thick)
+						 (botmar . dplt-botmar)
+						 (lftmar . dplt-lftmar)
+						 (rotate . dplt-rot))))
+				   val)))
+	      (scale
+	       (if (numberp val) (setq dplt-scale (float val)))))))
+
+;;; prescan to find the range of the plot
+
+(defun dplt-prescan ()
+   (in in-file)                   ; skip first word
+   (setq x-offset 800. y-offset 1100.)	;good initial values according to SCNV
+   (dplt-item)				;get things going
+   (do ((min-x 0) (min-y 0) (max-x 0) (max-y 0))
+       ((eq 'end item-type)
+	(setq x-offset (- x-offset (// (+ max-x min-x) 2))
+	      y-offset (- y-offset (// (+ max-y min-y) 2))))
+       (declare (fixnum min-x min-y max-x max-y))
+       (let ((new-x (arraycall fixnum x-y-array 0))
+	     (new-y (arraycall fixnum x-y-array 1)))
+	    (if (< new-x min-x) (setq min-x new-x))
+	    (if (> new-x max-x) (setq max-x new-x))
+	    (if (< new-y min-y) (setq min-y new-y))
+	    (if (> new-y max-y) (setq max-y new-y)))
+       (when (eq 'start-other item-type)
+	     (do nil ((= 0 (boole 1 1 (in in-file)))))	;skip ascii
+	     (filepos in-file (1- (filepos in-file))))
+       (dplt-item))
+   (let (((box-x0 box-y0 box-x1 box-y1 label-y1 datebox-x0 filebox-x0 text-y0
+		  title1-x0 title2-x0 date-x0 file-x0) box-parameters))
+	(setq x-offset (+ x-offset (// (+ box-x0 box-x1) 2))
+	      y-offset (+ y-offset -160. (// (+ label-y1 box-y1) 2))))
+   (filepos in-file 0))
+
+;;; Draw the frame and plot titles
+
+(defun dplt-frame ()
+   (switch-font 3)			;use large type
+   (setq dplt-font 3
+         dplt-current-font 3
+         dplt-char-height (1+ (fix (//$ (float current-height) dplt-scale)))
+         dplt-char-width  (1+ (fix (//$ (float current-width ) dplt-scale))))
+   (let* ((author-list (read-asciz-string))
+	  (title1      (read-asciz-string))
+	  (title2      (read-asciz-string))
+	  (date&time   (in in-file))	;ignored
+	  (fn1         (decode-sixbit (in in-file)))
+	  (fn2         (decode-sixbit (in in-file)))
+          (dir         (decode-sixbit (in in-file)))
+	  (base 10.)
+	  (*nopoint t)
+	  (dplt-thick 2)
+  	  (((() () (year month day) () (hours mins ())))
+	   (directory (list (truename in-file)) '(credate cretime)))
+	  (datetime-string
+	   (exploden (string-append month '// day '// year '|  | hours '/: mins )))
+	  ((box-x0 box-y0 box-x1 box-y1 label-y1 datebox-x0 filebox-x0 text-y0
+		   title1-x0 title2-x0 date-x0 file-x0) box-parameters))
+	 (dplt-line box-x0 box-y0 box-x1 box-y0)	;box around edge of paper
+	 (dplt-line box-x1 box-y0 box-x1 box-y1)
+	 (dplt-line box-x1 box-y1 box-x0 box-y1)
+	 (dplt-line box-x0 box-y1 box-x0 box-y0)
+	 (dplt-line box-x0 label-y1 box-x1 label-y1)	; top of label boxes
+	 (dplt-line datebox-x0 box-y0 datebox-x0 label-y1)	;vert line for date
+	 (dplt-line filebox-x0 box-y0 filebox-x0 label-y1)	;vert line for file
+	 (draw-string title1 title1-x0 text-y0)
+	 (draw-string title2 title2-x0 text-y0)
+	 (draw-string datetime-string date-x0 text-y0)
+	 (draw-string (append dir '(73) fn1) file-x0 text-y0))
+   T))
+
+;;; Read an ASCIZ string
+
+(defun read-asciz-string ()
+   (do ((l (decode-ascii (in in-file)) (decode-ascii (in in-file)))
+	(nl nil (nconc nl l)))
+       ((not (= 5 (length l))) (nconc nl l))))
+
+(defun draw-string (string x y)
+   (store (arraycall fixnum x-y-array 0) x)
+   (store (arraycall fixnum x-y-array 1) y)
+   (mapcar 'draw-char string))
+
+;;; Process vector words
+
+(defun draw-vector ()
+   (do  ((last-x) (last-y))
+        (nil)
+	(setq last-x (arraycall fixnum x-y-array 0))
+	(setq last-y (arraycall fixnum x-y-array 1))
+	(dplt-item)			;get next item
+	(unless (eq 'next-data item-type) (return nil))
+        (dplt-line last-x last-y
+		   (arraycall fixnum x-y-array 0)
+		   (arraycall fixnum x-y-array 1))))
+
+(defun draw-text (word)
+   (setq dplt-font			;font num = size + 20.*rot
+	 (+ (let ((size (boole 1 77 (lsh word -4))))
+		 (declare (fixnum size))
+		 (cond ((< size 11.) 0)	;find font of closest size
+		       ((< size 14.) 1)
+		       ((< size 20.) 2)
+		       ((< size 27.) 3)
+		       (t 4)))
+	    (* 20. (boole 1 1 (lsh word -17.)))))	;rot=1 if bit18 is on
+   (do ((word (in in-file) (in in-file)))	;do until end of file
+       ((or (= word -1) (= 0 (boole 1 1 word)))	;or start new mode
+	(dplt-item1 word))		;process new word for process-dplt-file
+       (draw-ascii word)))           ;(bit 35 is on)
+
+(defun draw-char (ch)  ;inputs ascii code for number and prints it
+   (let ((last-x (arraycall fixnum x-y-array 0))
+	 (last-y (arraycall fixnum x-y-array 1)))
+	(caseq ch
+	       (8. (setq last-x (- last-x dplt-char-width)))	;backspace
+	       (9. (setq last-x (* 8. dplt-char-width	;tab
+				   (1+ (// last-x dplt-char-width 8.)))))
+	       (10.(setq last-y (- last-y dplt-char-height )))	;linefeed
+	       (11.(setq last-y (+ last-y dplt-char-height)))	;vert tab
+	       (13.(setq last-x 0.))	;carraige return
+	       (32. (setq last-x (+ last-x dplt-char-width)))	;space
+	       ((127. 0.))		;ignore rubout,null
+	       (t			; print all other numbers as greek chars
+		(unless (= dplt-font dplt-current-font)	;new charachter font?
+			(switch-font dplt-font)	;reset
+			(setq dplt-current-font dplt-font
+			      dplt-char-width (1+ (fix (//$ (float current-width)
+							    dplt-scale)))
+			      dplt-char-height (1+ (fix (//$ (float current-height)
+							     dplt-scale)))
+			      current-baseline (+ 3 current-baseline)))
+		(gtyo ch (dplt-y last-x last-y) (dplt-x last-x last-y))
+		(setq last-x (+ last-x dplt-char-width))))
+	(store (arraycall fixnum x-y-array 0) last-x)
+	(store (arraycall fixnum x-y-array 1) last-y)
+	T))
+
+(defun draw-diamond ()
+   (let ((last-x (arraycall fixnum x-y-array 0))
+	 (last-y (arraycall fixnum x-y-array 1)))
+	(dplt-line (+ last-x dplt-diamond-size) last-y
+		   last-x (+ last-y dplt-diamond-size))
+	(dplt-line (+ last-x dplt-diamond-size) last-y
+		   last-x (- last-y dplt-diamond-size))
+	(dplt-line last-x (+ last-y dplt-diamond-size)
+		   (- last-x dplt-diamond-size) last-y)
+	(dplt-line last-x (- last-y dplt-diamond-size)
+		   (- last-x dplt-diamond-size) last-y)
+	(dplt-item)))                           ; info about next file word
+ 
+(defun draw-pad (word) (setq word word) (dplt-item))	;no op for now
+
+;;; Low level transformation and line drawing routines
+	;coordinate transformation
+	;transforms dplt x and y coordinates into pb coordinates such that
+        ;the origin [0,0] in dplt = [dplt-xorg,dplt-yorg]
+	;dplt-rot specifies rotation counterclockwise in increments of 90 degrees
+	;dplt-rot = 0 incurs a rotation of 90 degrees to facilitate dplt to pb
+	;dplt x axis --> pb y axis, dplt y axis --> pb -x axis
+
+
+(defun dplt-x (x y)   		;internal dplt x to pb x coordinates
+   (declare (fixnum x y))
+   (+ dplt-xorg
+      (if (oddp dplt-rot) (* (- dplt-rot 2.) (fix (*$ (float y) dplt-scale)))
+	  (* (- 1. dplt-rot) (fix (*$ (float x) dplt-scale))))))
+
+(defun dplt-y (x y)		;internal dplt y to pb y coordinates
+   (declare (fixnum x y))
+   (+ dplt-yorg
+      (if (oddp dplt-rot) (* (- dplt-rot 2.) (fix (*$ (float x) dplt-scale)))
+	  (* (1- dplt-rot) (fix (*$ (float y) dplt-scale))))))
+
+;;; Draw line from x,y to x1,y1 n internal dplt coord
+(defun dplt-line (x y x1 y1)
+   (declare (fixnum x y x1 y1))
+   (pb-linen (dplt-y x y) (dplt-x x y)
+	     (dplt-y x1 y1) (dplt-x x1 y1)
+	     dplt-thick))
+
+(defun dplt-item () (dplt-item1 (in in-file))) 
+
+(lap	dplt-item1 subr)
+	(move r 0 a)		;get the number
+	(movei t 'end)		;assume we are at the end
+	(movem t (special item-type))
+	(hlrz t r)		;get left half
+	(cain t 400001)		;special end word?
+	(popj p)		;yes, return
+	(move f (special x-y-array))	;get ASAR pointer
+	(hlre t r)		;get x
+	(ash t -1)		;shift right by 1 and then by 2 for scaling
+	(mul t scale)	        ;scale by 4
+	(add t @(special x-offset))
+	(setz tt)		;index 0
+	(movem t @ ttsar f)	;stuff it away
+	(hrre t r)		;get y
+	(ash t -1)		;shift right by 1 and then by 2 for scaling
+	(mul t scale)	        ;scale by 4
+	(add t @(special y-offset))
+	(movei tt 1)		;index 1
+	(movem t @ ttsar f)
+	(movei t 'start-other)	;assume non-vector, non-start word
+	(tlnn r 1)		;is low bit in rh = 1?
+	(movei t 'start-vector)	;yes
+	(trne r 1)		;is low bit in lh = 1?
+	(movei t 'next-data)	;yes
+	(movem t (special item-type))	;set the type
+	(movei a 'T)		;return T
+	(popj p)
+scale   (100000000000)
+()
+
+;;; Takes a word as an arg and calls DRAW-CHAR on each non-null char in it
+
+(lap	draw-ascii subr)
+	(move f 0 a)		;get the number
+	(hrli d 440700)		;make a byte pointer
+	(hrri d f)
+	(setz tt)
+loop	(ildb tt d)
+	(jumpe tt done)
+	(push p d)
+	(push p f)
+	(jsp t fxcons)		;make a number
+	(call 1 (function draw-char))
+	(pop p f)
+	(pop p d)
+	(tlne d 700000)
+	(jrst 0 loop)
+done	(movei a 't)
+	(popj p)		;and return
+()
+
+;; Local Modes:
+;; Mode: LISP
+;; Comment Column:40
+;; END:
+
+
+

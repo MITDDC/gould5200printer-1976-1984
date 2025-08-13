@@ -1,0 +1,87 @@
+Format for XGP SCN files:
+
+Files consist of sequential lines on the XGP.  Each line consists of a header,
+specifying how long it is, which line it is to be printed upon, and options
+such as specifying a cut and the end of file. These two words of header are
+followed by the line in the format required by the XGP interface.
+
+The first PDP-11 word in each line is the number of PDP-11 WORDS, not bytes,
+used for this scan line, including itself and the rest of the header.  For
+most PDP-10 programs this will be an even number, resulting in an integer
+number of PDP-10 words.
+
+The second PDP-11 word is the scan line upon which this line is to be printed.
+It is allowable to have non-sequential lines.  The unspecified lines will
+be blank.  If the line numbers are not ordered, they will come out as close
+as possible together, and the internal line count will be reset.  This is not
+the recommended mode of operation.  The top line on a page is numbered 1.
+Line specification which would result in pages longer than 36" are treated as
+end-of-file, as is a line specification of zero.
+
+Paper cutting may be specified by setting the sign of the second PDP-11 word.
+The rest of the buffer so marked will be ignored, and the paper will be cut
+at the line number specified by the second PDP-11 word with the sign bit cleared.
+
+The paper will be automatically cut just before the top margin on the page.
+The top margin will equal the value of the (setable) parameter LFTMAR in the
+PDP-10 program.
+
+PDP-11 words are stored in PDP-10 format in two 16 bit bytes, left justified in
+the 36 bit word.  It is required that the remaining 4 right bits be clear.
+
+The format of the XGP interface data fis as follows:
+
+The data sent to the XGP is in the form of eight bit bytes.  Due to 10/11 numbering
+disagreement, the order of the bytes taken by the interface is (in a PDP-10 word)
+Byte 2, Byte 1, Byte 4, Byte 3, where the 8 bit bytes are numbered from the left.
+The byte stream is interpreted in one of two (useful) modes.  Image mode, once
+entered, accepts bytes and sends them to the XGP until the end of the XGP line is
+reached.  There is no method of escaping from it.  It is entered (from command mode)
+by the byte sequence 0 , 2 .  Run length mode is entered from command mode
+by the sequence 0 , 0 , and accepts a count of the number of bits which are to be 
+(alternately) black or white.  Initially, the color is white.  If a string of more
+than 377 dots which are white or black is encountered, then you must output
+a 377, followed by a zero, to switch back to the color in use, followed by the
+remainder.  Two sequential zeros will escape from run length encoding mode back
+into command mode.  From command mode, 
+
+The maximum allowable size for a line is 55. PDP-10 words, which is enough to
+specify a line in image mode.  The line should be specified in image mode if the
+run length encoding of it would be longer than this.  Note that it is necessary
+to provide the trailing zeros in image mode, as the interface will otherwise
+output garbage for the remainder of the line.
+
+------------------------------------------------------------------------
+
+Proposed modifications.
+
+Compatible
+
+1 the first byte in image mode and run length mode should be  multiplied
+by 8 to give a count of the leading white raster positions.   this makes
+a left margin easy to implement.   the value of this byte at present  is
+always zero
+
+2 it shouldn't be necessary to explicly escape from run length mode with
+two (three?) consequtive 0 bytes nor to  pad out the length of the  line
+in image mode to 55. (54.?) PDP-10  words.   (the length of the line  is
+already known from the first PDP-11 word of the line)
+
+Incompatible
+
+1 in image mode the  most significant bits of  a byte should be  plotted
+first (now the least significant ones are)
+
+2 the bytes should be in the right order within a PDP-10 word
+
+CFFK@MIT-MC (Sent by CFFK0@MIT-MC) 02/18/77 12:32:30 Re: plt format
+To: tk at MIT-AI
+CC: CFFK at MIT-MC
+I think PLT FORMAT is incorrect on 3 points.
+1) The maximum length of an image mode line is 54. words, not 55.
+2) An image mode line must be this length (54.); it can't be less.
+3) Run-length mode must be explicity exited with 3 (maybe 2) 0
+   bytes.
+(With 2 and 3, I had assumed incorrectly that the count at the
+beginning of the line was sufficient for specifying its length)
+

@@ -1,0 +1,114 @@
+CFFK@MIT-MC 03/18/80 13:50:13
+To: (BUG GLP) at MIT-MC
+What does it mean when the spooler goes to sleep
+for an extended time in the middle of processing a file?
+
+AGRE@MIT-AI 02/15/80 14:22:41
+To: (BUG GLP) at MIT-MC
+    GLP@MIT-MC (Sent by COMSAT@MIT-MC) 02/14/80 20:40:07
+    [COMSAT: This was a failing QSEND.]
+    GLP@MIT-MC 02/14/80 20:40:03
+    Error occurred while trying to queue your output for the XGP (probably
+      due to AI going down or AI: device lossage).
+      You must queue your output manually when AI: is revived.
+      See the XGP node under :INFO GLP for more details.
+
+I've been getting alot of these lately when trying to use automatic plot spooling
+from MACSYMA's PLOT2 facility.  Roughly 40% of my plots (which I am trying to
+send to the XGP from MC, by the way) get zapped by this, even when AI 
+and the XGP are both up and not heavily loaded.  Maybe this indicates a bug
+in the GLP spooler?  By the way, :INFO GLP does not give enough information
+to let an ITS novice such as myself figure out where the lost plots are and
+how to get them to the XGP spooler in one piece.  Perhaps a separate INFO
+menu entry for GLP for this one issue could be set up and the error message
+could point to it explicitly.    - Phil
+
+
+CFFK@MIT-MC 02/13/80 09:06:08 Re: Plotting on XGP
+To: AGRE at MIT-MC
+CC: JPG at MIT-MC, (BUG PLOT2) at MIT-MC, (BUG GLP) at MIT-MC
+The reason your category shows as "O" is that the Gould Spooler
+actually does the queueing of the plot to the XPG(having processing
+it itself).  Undoubtedly the Gould Spooler could be hacked to 
+figure out the correct category appropriate to the person
+originally doing the plot.  However I would regard it as a waste
+of someone's time to make this fix.  (The plots all go in Queue 1
+whatever your category.)  Please understand that no insult is
+intended by categorizing you as "non-human".
+[Gould-hackers:  Maybe the default category could be changed to "U"
+for plots?]
+
+BROM@MIT-MC 09/14/79 07:58:19
+To: (BUG GLP) at MIT-MC
+:GLP FILE1 FILE2  ==>
+.GLPR.      Q1 >
+FILE NOT FOUND...
+WHAT IS THIS FILE??? (THIS BUG HAS OCCURRED TO ME SEVERAL TIMES...
+IS THERE AN EASY FIX?????)
+
+BROM@MIT-MC 08/31/79 09:34:03
+To: (BUG GLP) at MIT-MC
+cant queue from an arc device....
+
+BROM@MIT-MC 08/10/79 07:54:06
+To: JLK at MIT-MC, (BUG GOULD) at MIT-MC
+there is a file missing in the .glpr. directory...
+    q1 <
+i tried finding out if there were copies of this file elsewhere, but did not succeed.....
+the gould i losing because of it (the spooler doent work.....
+
+KEN@MIT-MC 07/12/79 00:39:13
+To: (BUG GLP) at MIT-MC
+I was trying to use :glp ... /output:xgp and since the GLP is being
+serviced it just queued my request rather than send it to the xgp.
+Clearly using :glp to xgp files should not be affected by the state
+of the gould printer?
+
+RHB@MIT-MC 07/03/79 12:16:53
+To: (BUG GLP) at MIT-MC
+;sample doesn't work...
+
+RWK@MIT-MC 05/25/79 06:20:12
+To: CFFK at MIT-MC, (BUG GLP) at MIT-MC
+The next version of DDT will not have GLP^F set the default device.
+
+CFFK@MIT-MC 05/24/79 20:52:52
+To: (BUG GLP) at MIT-MC
+glp^F sets the default dev for :print etc.
+It shouldn't.  (cf. xgp^F and TTY^F)
+
+RHB@MIT-MC 05/09/79 15:06:56
+To: (BUG GLP) at MIT-MC
+:glp foo/tek loses but :glp ;tek foo wins.
+
+JLK@MIT-MC 05/06/79 14:56:07
+To: (BUG GLP) at MIT-MC
+The thing which sends network error
+commands to the user should preface it by an explanation.
+
+KLE@MIT-MC 03/20/79 14:28:14
+To: (BUG GLP) at MIT-MC
+The indentation on the glp is better now, there is some.  But I think that
+there is a problem in the algorithm  I believe tabs in the first column
+position to column 9 rather than 8.  My emacs text still doesnt look like my
+glp output.
+
+KLE@MIT-MC 03/14/79 02:23:14
+To: (BUG GLP) at MIT-MC
+The :glp foo command will not expand tabs into the proper number of spaces
+before printing.  Shouln't it?
+
+KLE@MIT-MC 03/12/79 16:06:41
+To: (BUG GLP) at MIT-MC
+1) Although the doc in info gives an example of NOHEADER, it does not specify
+it in the list of options.
+
+2)The abort command does not work as documented.  It did not ask me if I
+really wanted to abort the current thing being printed, it just did so.  Also,
+one time I used it, I caused the GLP spooler to stop.
+
+
+AS@MIT-MC 03/03/79 15:06:05
+To: (BUG GLP) at MIT-MC
+Why does GLP fail to load MC:R;12TR KST?
+

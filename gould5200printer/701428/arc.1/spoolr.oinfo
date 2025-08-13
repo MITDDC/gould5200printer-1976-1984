@@ -1,0 +1,147 @@
+This file describes the data flow and format for communication between spooler
+programs in the PDP-10 and a PDP-11 printer driver for a GOULD 5000 printer/plotter.
+A block diagram outlining the main processes in this scheme is shown below:
+
+	       __________	__________	_________
+USER MAIL   -->|	|	|	 |	|	|
+    	       | GLPTR  | BYTE	| GLPTR  |  COM	| PDP-11|
+    	       |	|   --->|	 |   -->|	|
+CLI DEVICE  -->| SPOOLR | FILES	| UNSPLR |  LINK| LPTDR |
+	       |__________|	|__________|	|_________|
+
+The input to the spooler is a sequence of file specifications of a files
+to be spooled with flags specifying options (copies, hardware/software fonts, etc.)
+and file type (ascii, XGP, ARDS, TEK, SCAN, IMAGE, PLT, etc.).  This input
+can arrive via the CLI device from some user program, or from mail sent to
+the spooler by the user.  Data may also be sent directly thru the CLI device.
+
+< futher description of specification format>
+
+The spooler generates byte files which contain 4 8-bit bytes packed in each
+36-bit word, left justified.  This file is in a format that can just be sent
+directly with a SIOT call which specifies 8-bit bytes.  This means all bytes
+with the 8'th bit on are quoted with %TDQOT so they can be sent directly to
+the PDP-11.  The spooler may break an input file into several output byte files
+(called GLPT:[GLPT] >).  This is done so that the spooler keeps the unspooler
+busy, but can be smart about not using up infinite disk space by creating many
+large image files far ahead of when the unspooler can use them.  The format
+of these byte files as interrpreted by the PDP-11 program will be discussed
+subsequently.  The spooler queues up all files it sees and renames the mail
+files as it does so.  The renamed mail files are deleted when the file
+has been output.  That way, if I.T.S. dies, the spooling process will not
+lose the queued but not unspooled files.
+
+< the queuing process could be clarified>
+
+The unspooler looks for GLPT;[GLPT] > files and if it finds one it then
+tries to establish a link to the PDP-11 driving the printer.  In the simple
+tty connection, it just tries to open a channel to the 11, and then sends
+an acknowledgement code and waits for a correct response.  When the CAIOS
+net exists, the appropriate contact protocol will be followed.  Once a connection
+has been achieved, the unspooler maps the file into its core and does an
+8-bit SIOT of the whole mess out to the 11.  When this is completed, the file
+is deleted.  If there are more files, the process continues.  When there are
+no more files, the unspooler closes the connection to the PDP-11 (unless it
+is a network connection) and proceeds to its secondary job, checking up on
+the spooler.  If there is unprocessed mail for the spooler and the spooler
+is not alive, the unspooler loads the spooler as an inferior job and disowns
+him.
+
+
+
+
+Protocol for Data Transmission of Printer Files to the PDP-11:
+
+     Data is sent in large chunks called BLOCKS.  A BLOCK contains a sequence
+of COMMAND WORDS and LINE BUFFERS.  A COMMAND WORD specifies some operation
+of the printer, such as form feed, disable, enter graphics mode, etc.  A
+LINE BUFFER is a sequence of data words, possibly encoded, to be sent to the
+printer.  The format of BLOCKS is:
+	BLOCK ESCAPE CODE - one byte (205)
+	BYTE COUNT - two bytes, low byte followed by high byte, a count of
+                     bytes to follow.  Does not include the escape code or
+                     the byte count.
+	DATA WORDS - An even number of bytes, in the order low byte, high byte
+		     consisting of command words or line buffers.
+
+Special Codes:
+	ACK  -  Request for acknowledgement.  PDP-11 sends back an acknowledgement
+		response character (^A) to tell the unspooler that it is alive and
+		well.
+	QUIT -  Quit the current block (this is just the I.T.S. output reset command)
+	^\   -  Prefix for the buffer allocation commands sent to the PDP-10 as part
+		of the intelligent terminal protocol.
+
+
+Blocks always contain a whole number of line buffers, i.e. line buffers are not
+broken across block boundaries,  The maximum size of blocks is an assembly
+parameter, but it is not necessary to send complete blocks.  The reason for
+the block structure is a combination of using the intelligent terminal protocol
+for buffer allocation, and the fact that, for maximum throughput,  once a byte
+or data word is stored in PDP-11 memory, it should not be moved again, but rather
+snarfed directly by the DMA interface of the printer.  This means that line
+buffers must be stored contiguously without wraparound as would be necessary in
+a circular buffer scheme.
+
+Structure of Line Buffers and Command Words:
+
+Command words are identified by the sign bit being on.  The right half (low byte) 
+of a command word is a function code decoded as follows:
+
+TOP - 0 -  Top of form (move to crease on fan fold, or 256 raster lines on roll paper)
+GMS - 1 -  Set graphics mode (if last line is set also, then enter slow speed mode)
+CUT - 2 -  Cut the paper on this raster line
+EN  - 3 -  Enable the printer (reset the printer and get ready for data).
+DS  - 4 -  Disable the printer (to change modes or finish printing)
+LLF - 5 -  Last line flag.  Slow down printer prior to exiting high speed graphics mode.
+INTON 6 -  Enable printer interrupts (not sent by the PDP-10)
+INTOF 7 -  Disable interrupts (not sent by the PDP-10)
+HOME 200 - Home the paper (??)
+STEP 301 - Line feed in alphabetic mode, skip a raster line (blank) in graphics mode.
+
+
+If BIT 8 is set (in the left byte) this means that logical end of a printout has been
+reached and the PDP-11 program should synchronize itself and printout any error messages
+on a blank page.
+
+Line buffers:  The first word of a iine buffer is a header describing the buffer.  The
+sign bit of the header word must be 0 to distinguish it from command words.  Bits 0-6
+are a count of data words to follow (not including the header word).  Bit 7 is a
+run-length encoded flag.  If the printer is in graphics mode (as indicated by a function
+code 1 executed previously), this bit means to interpret the line buffer as run-length
+encoded information which must be expanded before being sent to the printer.  If this
+bit is 0, the data is taken as image mode data (in graphics mode) or alphabetic data
+(in alpha mode).  If image mode is specified, Bits 8-14 are a word count of white words
+to be appended to the beginning of the image mode data.  If run-length encoding is
+specified BIT 8 indicates the default color of the buffer (1 = black, 0 = white).  The
+first byte of run-length encoding is a count of white bytes (margin), followed by an
+image byte (inserted verbatim).  Subsequent words contain a byte count of the color
+specified by the color bit in the left (high) byte, and an image byte in the right
+(low) byte.
+
+		____________________________________________________
+		|   |                  |   |			   |
+		|   |    	       |   |   			   |
+		| 1 |      	       | I |	FUNCTION CODE	   |
+		|   |		       |   |			   |
+		|_____|___________________|____|________________________|
+
+I=1 synchronize
+
+		____________________________________________________
+		|   |                     |   |			    |
+		|   |    MARGIN COUNT OR  |   |   DATA WORD COUNT   |
+		| 0 |      COLOR CODE     | R |			    |
+		|   |			  |   |			    |
+		|_____|______________________|____|______________________|
+
+R = 1 for run-length encoding, = 0 for image data
+COLOR = 1 for black, = 0 for white.
+Note R=0 implies bits 8-14 are a word count of white margin words
+
+run-length format:
+<count of white bytes> <image byte> <count of colored bytes> <image byte>  ...
+
+
+Data words are always sent low byte followed by high byte.
+

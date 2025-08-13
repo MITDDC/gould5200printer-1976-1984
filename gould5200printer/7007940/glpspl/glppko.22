@@ -1,0 +1,120 @@
+;-*-MIDAS-*-
+TITLE GOULD CHAOS NET PACKET OUTPUT
+
+;;; This file contains routines for outputing a page image or alphanumeric
+;;; data to the Gould printer via the chaos network.
+
+IF1, .INSRT SYSTEM;CHSDEF >
+IF1, .INSRT LISP;.FASL DEFS
+.FASL
+
+LC==FREEAC			;scan line counter
+
+;;; Gould packet opcode bits
+%GOCUT==1			;CUT THE PAPER
+%GOALP==2			;ENTER ALPHA MODE
+%GOSLW==4			;SLOW DOWN
+
+;;; (%SEND-PAGE-IMAGE <connection> <image array>)
+;;; Sends a page image in <image array> on a chaos net <connection>.
+;;; Each scan line is sent in one packet.  A cut command is given
+;;; at the beginning of each page.
+;;; NOTE: it is NOT required for the image array to be GC protected, since
+;;; we are careful to always indirect throught the TTSAR when referencing it.
+;;; This function should be enclosed in a CATCH for the tag
+;;; CHAOS-PKTIOT-ERROR to handle IOC errors.
+
+.ENTRY %SEND-PAGE-IMAGE SUBR 0003	;subr of 2 args
+	HRRZ A,(A)		;get output file array (CDR of the connection)
+	MOVEI C,(B)		;use C instead of B (B gets clobbered in LINPKO)
+	SETO TT,		;index = -1 to extract slot in array prefix
+	MOVE LC,@TTSAR(C)	;second dimension length (scan line count)
+	MOVE F,.SPECIAL CHAOS-INTERNAL-PKT-BUFFER	;might as well use it
+	HRRZ F,TTSAR(F)		;pointer to data area of packet array
+LINLP:	PUSHJ P,LINPKO		;output a line
+	SOJG LC,LINLP		;loop over the number of scan lines on the page
+	MOVEI A,.ATOM T
+	POPJ P,
+
+;;; This routine puts out one scan line in one packet, suppressing trailing 0's.
+;;; R  is a count of words across the page (usually 65 max)
+;;; F  is a byte pointer into the packet buffer, or a pointer to the origin.
+;;; TT is the relative index into the image array (LISP standard convention).
+;;; D  is the number of scan lines on the page, used to add into TT each step.
+;;; T is a temporary
+
+LINPKO:	MOVE TT,[-2]		;index into the array prefix to get the
+	MOVE R,@TTSAR(C)	;number of words across page (dim 1 length)
+	PUSH FXP,R		;save for later reuse
+	SETO TT,		;index into the array prefix to get the
+	MOVE D,@TTSAR(C)	;number of scan lines (dim 2 length)
+	MOVEI TT,(D)		;put it also in TT
+	SUBI TT,(LC)		;minus the current line count (offset)
+	MOVEI T,%CODWD		;default opcode is word-data
+	SKIPN TT		;first line?
+	 TRO T,%GOCUT		;yes, set the cut bit
+	CAIG LC,3		;are we within 3 lines of the end?
+	 TRO T,%GOSLW		;yes, set the slow-down bit in the opcode
+	DPB T,[$CPKOP (F)]	;deposit opcode
+	PUSH FXP,F		;save F (origin of the packet buffer)
+	ADDI F,%CPKDT		;32-bit word pointer into the array
+	SETZM WHTWDS		;zero the count of white words
+
+LINPLP:	SKIPN T,@TTSAR(C)	;load a word from the image array and test it
+	 AOSA WHTWDS		;a zero word, so increment the white count
+	  SETZM WHTWDS 		;a non-zero word, so zero the white count
+	MOVEM T,(F)		;deposit the word
+	MOVEI F,1(F)		;increment F
+	ADDI TT,(D)		;add in the offset
+	SOJG R,LINPLP		;loop until done going across the page
+
+	POP FXP,F		;restore F with pointer to origin of packet buffer
+	POP FXP,T		;get back R (number of words across the page)
+	SUB T,WHTWDS		;minus the number of trailing white words
+	SKIPN T			;special case check for 0
+	 MOVEI T,1		;set it to at least 1 word for the losing Gould
+	LSH T,2			;times 4
+	DPB T,[$CPKNB (F)]	;deposit the byte count
+	MOVE B,-2(F)		;A contains a file array, B gets asar pointer for pkt buf
+	JCALL 2,.FUNCTION %CHAOS-PKTIOT	;send the packet
+
+WHTWDS:	0
+
+
+;;; (%SEND-CHARACTER-LINE <connection> <linearray> <char count> <cut-flag>)
+;;; Takes <char count> bytes from <linearray> packed right-justified, one per 36-bit
+;;; word, and copies them into the packet buffer and sends them.  <cut-flag>
+;;; being non-zero means the paper-cut bit should be set.
+
+
+.ENTRY	%SEND-CHARACTER-LINE SUBR 0005	;SUBR of 4 arguments
+	MOVE R,(C)		;Get the character count in R
+	MOVE D,[441000,,%CPKDT (F)]
+	MOVE F,.SPECIAL CHAOS-INTERNAL-PKT-BUFFER	;might as well use it
+	HRRZ F,TTSAR(F)		;pointer to data area of packet array
+	MOVEI T,%CODWD+%GOALP	;16-bit data, and alphanumeric mode
+	SKIPE AR1		;skip if cut flag not set
+	 TRO T,%GOCUT		;set the cut bit
+	DPB T,[$CPKOP (F)]	;deposit the opcode
+	SETZ TT,		;Zero the index
+	SKIPN R			;hack for 0 length lines
+	 JRST [	MOVEI R,1	;put in at least one character
+	 	MOVEI T,40	;which is a space
+	 	MOVEM T,@TTSAR(B)	;into the character array
+		JRST .+1]
+	PUSH P,R
+CHLOOP:	MOVE T,@TTSAR(B)	;pick up the character
+	IDPB T,D		;put it in the packet buffer
+	AOJ TT,			;step the linearray index
+	SOJG R,CHLOOP		;loop until done
+	POP P,R
+	TRNE R,1		;pad to an even number
+	 JRST [	MOVEI T,40	;with spaces
+		IDPB T,D
+		AOJA R,.+1]
+	DPB R,[$CPKNB (F)]
+	HRRZ A,(A)		;CDR of the connection is the output filearray.
+	MOVE B,-2(F)		;setup asar pointer for %CHAOS-PKTIOT call below
+	JCALL 2,.FUNCTION %CHAOS-PKTIOT	;send the packet.  A and B are set up.
+
+FASEND

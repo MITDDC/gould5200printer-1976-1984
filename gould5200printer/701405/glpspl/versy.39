@@ -1,0 +1,279 @@
+; -*- Lisp -*-
+
+; Format for PLT files.
+; See R. H. Frobose, Compression of Graphic Data in Raster Format
+; UCRL-51858 (June 1975).
+;
+; Files consist sequence of 8-bit bytes.
+;	First byte of file is '016 (specifies format)
+;	'1nn plot '0nn+1 zero bytes and then plot the next byte
+;	'2nn plot next 'nn+1 bytes
+;  *	'0nn ('nn >= 1) repeat next byte '0nn+1 times
+;	'000 page eject
+;	'300 end line/skip line
+;  *	'3nn (1 <= 'nn <= '036) repeat previous line 'nn times
+;  *	'337 XOR line follows
+;	'34n 3 bytes of top/8, left, and right margins follow
+;	 (top margin = (top/8)+'n).  Margins are first/last nonzero
+;	 line/byte of page.  Counting starts at 1.
+;
+;  * ==> not implemented here (and probably not worth implementing).
+
+(declare (special versy-buf-size gould-connection versy-lowres pb
+		pb-size-x pb-size-y pages-locked
+		versatec-large versatec-offx versatec-offy
+		versatec-x versatec-y
+		versy-blocks-per-file versy-scan-file highre)
+	(fixnum versy-buf-size byte bytecnt cnt cnt1 first i i1 i2 j j1 last lftmar lftwrd
+		linenum pb-size-x pb-size-y rgtmar rgtwrd shift topmar
+		versatec-offx versatec-offy versatec-x versatec-y
+		versy-blocks-per-file word zerocnt
+		(versatec-comb-and fixnum fixnum)
+		(versatec-collaps-and fixnum))
+	(notype (versy-byte-out fixnum) (byte-stream-out fixnum fixnum)
+		(close-versy-file) (end-for-versatec) (lock-pages)
+		(initialize-for-versatec) (open-versy-file)
+		(output-versatec-scan-file) 
+		(versatec-compress-line fixnum fixnum fixnum)
+		(versatec-compress-page fixnum fixnum fixnum fixnum)
+		(versy-obuf-out) (zero-stream-out fixnum fixnum)))
+
+(eval-when (eval compile)
+ (defun ary macro (l) (cons 'arraycall (cons 'fixnum (cdr l)))))
+
+(setq versy-lowres t versy-buf-size 64. versy-blocks-per-file 20.)
+
+(array versy-lbuf fixnum 1)
+(array versy-obuf fixnum (1+ versy-buf-size))
+
+(defun initialize-for-versatec ()
+       (if gould-connection (gould-disconnect))
+       (setq pb-size-y 66. pb-size-x 1700. versy-lowres (not highre))
+       (reconfigure-page-buffer-array pb-size-y pb-size-x)
+       (cond (versy-lowres
+	      (setq versatec-x 32. versatec-y 800.
+		    versatec-offx 0 versatec-offy 50.
+		    versatec-large nil))
+	     (t (setq versatec-x 64. versatec-y 1600.
+		      versatec-offx 0 versatec-offy 50.
+		      versatec-large t)))
+       (*rearray 'versy-lbuf 'fixnum (* 4 versatec-x))
+       (open-versy-file)
+       (if pages-locked (lock-pages)))
+
+(defun end-for-versatec () (close-versy-file))
+
+(defun open-versy-file ()
+       (setq versy-scan-file
+	     (do ((dev '(fourth third second dsk) (cdr dev))
+		  (file))
+		 ((null dev)
+		  (user-error "Cant open the VER file ")
+		  (*throw 'spooler-toplevel nil))
+		 (setq file
+		       (errset (open (list (list (car dev) '/.glpr/.) '> 'ver)
+				     '(out fixnum block))
+			       nil))
+		 (and file (return (car file)))))
+(store (versy-obuf versy-buf-size) 0)
+ (versy-byte-out #o16)
+ nil)
+
+(defun close-versy-file ()
+; Retract last formfeed (0) and output enough end-of-line
+; bytes (300) to make file have an even number of words.
+; (This is because in USC-USC file transfer an extra 0 word
+; is tagged onto end of files with an odd number of words.
+ (store (versy-obuf versy-buf-size) (1- (versy-obuf versy-buf-size)))
+ (do ((i 0 (1+ i))) ((= i 3) (versy-obuf-out)) (versy-byte-out #o300))
+ (and (oddp (filepos versy-scan-file))
+      (do ((i 0 (1+ i))) ((= i 4) (versy-obuf-out)) (versy-byte-out #o300)))
+ (close versy-scan-file)
+ nil)
+
+(defun output-versatec-scan-file ()
+ (cond ((> (filepos versy-scan-file) (* versy-blocks-per-file 1024.))
+	(close-versy-file) (open-versy-file)))
+; scan for topmar, lftmar etc.
+;for (not versatec-large) also do the 200/in to 100/in resolution change
+ (let ((topmar versatec-y) (lftmar versatec-x) (rgtmar 0) (botmar 0)
+       (lftwrd 0) (rgtwrd 0) (blank t))
+  (cond (versatec-large
+; lftmar
+   (do ((i 0 (1+ i))) ((= i versatec-x))
+       (and (do ((j 0 (1+ j)) ) ((= j versatec-y))
+		(cond ((not (= (ary pb (+ i versatec-offx) (+ j versatec-offy)) 0))
+		       (setq lftmar i blank nil) (return t))))
+	    (return nil)))
+   (cond ((not blank)
+; rgtmar
+	  (do ((i (1- versatec-x) (1- i))) ((not (> i lftmar)) (setq rgtmar i))
+	      (and (do ((j (1- versatec-y) (1- j)) ) ((< j 0))
+		       (cond ((not (= (ary pb (+ i versatec-offx) (+ j versatec-offy)) 0))
+			      (setq rgtmar i) (return t))))
+		   (return nil)))
+; topmar
+	  (do ((j 0 (1+ j))) ((= j versatec-y))
+	      (and (do ((i lftmar (1+ i))) ((> i rgtmar))
+		       (cond ((not (= (ary pb (+ i versatec-offx) (+ j versatec-offy)) 0))
+			      (setq topmar j) (return t))))
+		   (return nil)))
+; botmar
+	  (do ((j (1- versatec-y) (1- j))) ((not (> j topmar)) (setq botmar j))
+	      (and (do ((i lftmar (1+ i))) ((> i rgtmar))
+		       (cond ((not (= (ary pb (+ i versatec-offx) (+ j versatec-offy)) 0))
+			      (setq botmar j) (return t))))
+		   (return nil)))
+	  (do ((j topmar (1+ j))
+	       (i1 (+ lftmar versatec-offx)) (i2 (+ rgtmar versatec-offx)))
+	      ((> j botmar))
+	      (setq lftwrd (boole 7 (ary pb i1 (+ j versatec-offy)) lftwrd)
+		    rgtwrd (boole 7 (ary pb i2 (+ j versatec-offy)) rgtwrd))) )) )
+	(t (do ((i 0 (1+ i)) (i1 0) (i2 0) (word 0)) ((= i versatec-x))
+	       (setq i1 (+ versatec-offx (* 2 i)) i2 (1+ i1))
+	       (do ((j 0 (1+ j)) (j1 0)) ((= j versatec-y))
+		   (setq j1 (+ versatec-offy (* 2 j)))
+		   (setq word (versatec-comb-and (ary pb i1 j1) (ary pb i2 j1)))
+		   (store (ary pb (+ versatec-offx i) j1) word)
+		   (cond ((not (= word 0))
+			 (setq blank nil botmar (max botmar j) topmar (min topmar j))
+			 (cond ((= i lftmar) (setq lftwrd (boole 7 lftwrd word)))
+			       ((< i lftmar) (setq lftmar i lftwrd word)))
+			 (cond ((= i rgtmar) (setq rgtwrd (boole 7 rgtwrd word)))
+			       ((> i rgtmar) (setq rgtmar i rgtwrd word)))))))))
+  (cond ((not blank)
+; Change lft/rgtmar so they point to the first/last nonzero bytes.
+	 (setq lftmar (+ (* 4 lftmar)
+			 (do ((i 0 (1+ i))) ((= i 4) i)
+			     (or (= (lsh lftwrd (- (* 8 i) 28.)) 0) (return i))))
+	       rgtmar (- (* 4 rgtmar) -3
+			 (do ((i 0 (1+ i))) ((= i 4) i)
+			     (or (= (lsh rgtwrd (- 24. (* 8 i))) 0) (return i)))))
+	 (versatec-compress-page topmar botmar lftmar rgtmar))))
+ nil)
+
+(defun versatec-compress-page (topmar botmar lftmar rgtmar)
+; outputs a page
+; only implements repeated zeros and premature termination of line
+ (and (> topmar botmar) (setq botmar 0 topmar 0))	;shouldn't be needed
+ (and (> lftmar rgtmar) (setq rgtmar 0 lftmar 0))	; ditto 
+ (and (> (1+ (- rgtmar lftmar)) (* 4 versatec-x))
+      (setq rgtmar 0 lftmar 0))	; ditto 
+; Output margin info.  Increment by 1 to account for different indexing.
+ (versy-byte-out (boole 7 #o340 (boole 1 (1+ topmar) 7)))
+ (versy-byte-out (boole 1 #o377 (lsh (1+ topmar) -3)))
+ (versy-byte-out (boole 1 #o377 (1+ lftmar)))
+ (versy-byte-out (boole 1 #o377 (1+ rgtmar)))
+ (do ((j topmar (1+ j))) ((> j botmar))
+     (versatec-compress-line j (+ (* 4 versatec-offx) lftmar)
+			       (+ (* 4 versatec-offx) rgtmar)))
+ (versy-byte-out 0))
+
+(defun versatec-compress-line (linenum lftmar rgtmar)
+ (setq linenum (+ versatec-offy (* linenum (cond (versatec-large 1)
+						 (t 2)))))
+(let ((num -1) (earlyflag nil))
+ (do ((i 0 (1+ i)) (j lftmar (1+ j))
+      (word (ary pb (lsh lftmar -2) linenum))
+      (shift (- (lsh (boole 1 3 lftmar) 3) 28.) (+ shift 8)))
+     ((> j rgtmar)
+      (and (< num (1- i)) (setq earlyflag t)))
+     (and (> shift 0) (setq word (ary pb (lsh j -2) linenum) shift -28.))
+     (store (versy-lbuf i) (let ((byte (boole 1 #o377 (lsh word shift))))
+			  (or (= byte 0) (setq num i))
+			  byte)))
+ (do ((i 0 (1+ i)) (byte)
+      (zeros nil) (zerocnt 0) (bytecnt 0))
+     ((> i num)
+      (byte-stream-out bytecnt (1- i))
+      (and earlyflag (versy-byte-out #o300)))
+     (setq byte (versy-lbuf i))
+     (cond ((and (= byte 0) (< zerocnt 64.))
+	    (setq zerocnt (1+ zerocnt))
+	    (cond ((and (not zeros) (> zerocnt 1))
+		   ; need 2 consequetive zeros to start counting zeros
+		   (byte-stream-out bytecnt (- i zerocnt))
+		   (setq zeros t bytecnt 0))))
+	   (t (cond (zeros (zero-stream-out zerocnt byte)
+			   (setq zeros nil zerocnt 0 bytecnt 0))
+		    (t (setq bytecnt (1+ (+ zerocnt bytecnt)) zerocnt 0))))))))
+
+(defun byte-stream-out (cnt last)
+; outputs an arbitrary length stream of bytes
+       (do ((cnt1 64.) (first (1+ (- last cnt)) (+ first cnt1)))
+	   ((not (> cnt 0)))
+	   (setq cnt1 (min cnt1 cnt) cnt (- cnt cnt1))
+	   (versy-byte-out (boole 7 #o200 (1- cnt1)))
+	   (do ((i (1- cnt1) (1- i)) (j first (1+ j)))
+	       ((< i 0))
+	       (versy-byte-out (versy-lbuf j)))))
+
+(defun zero-stream-out (cnt byte)
+; does coding for 1-64 zeros followed by byte
+ (versy-byte-out (boole 7 #o100 (1- cnt)))
+ (versy-byte-out byte))
+
+(defun versy-byte-out (byte)
+; Buffers byte output to disk.  A pointer to next empty slot is kept
+; in cnt = (versy-obuf versy-buf-size).
+; (versy-obuf cnt) is where this byte will go, unless cnt>=versy-buf-size.
+; In the latter case, the versy-obuf is output and cnt is suitably
+; decreased before storing byte.
+; Cnt is then incremented by 1.
+; (Note that the last byte may be retracted by decrementing cnt
+; by 1.  But only 1 byte can be retracted like this.)
+  (or (< (versy-obuf versy-buf-size) versy-buf-size) (versy-obuf-out))
+  (let ((cnt (versy-obuf versy-buf-size)))
+       (store (versy-obuf cnt) byte)
+       (store (versy-obuf versy-buf-size) (1+ cnt)))
+  nil)
+
+(defun versy-obuf-out ()
+; Emptys buffer to versy-scan-file.
+; But can't completely empty buffer unless cnt is
+; a multiple of 4.  So at the end must stick 3 zero bytes
+; into buffer.
+ (let ((cnt (versy-obuf versy-buf-size)) (cnt1 0) (file versy-scan-file))
+      (setq cnt1 (boole 4 cnt 3)) ; sets low 2 bits of cnt to 0
+      (do ((i 0 (+ i 4))) ((= i cnt1))
+	  (out file
+	       (boole 7
+		      (lsh (versy-obuf i) 28.)
+		      (lsh (versy-obuf (1+ i)) 20.)
+		      (lsh (versy-obuf (+ i 2)) 12.)
+		      (lsh (versy-obuf (+ i 3)) 4))))
+(do ((i 0 (1+ i)) (j cnt1 (1+ j))) ((= j cnt))
+ (store (versy-obuf i) (versy-obuf j)))
+      (store (versy-obuf versy-buf-size) (- cnt cnt1)))
+ nil)
+
+(defun versatec-comb-and (i1 i2)
+       (setq i1 (versatec-collaps-and i1)
+	     i2 (versatec-collaps-and i2))
+       (boole 7 (lsh i1 16.) i2))
+
+(defun versatec-collaps-and (i1)
+       (cond ((= i1 0) 0)
+	     (t (setq i1 (boole 1 i1 #x+555555550)
+		      i1 (boole 7 i1 (lsh i1 -1))
+		      i1 (boole 1 i1 #x+333333330)
+		      i1 (boole 7 i1 (lsh i1 -2))
+		      i1 (boole 1 i1 #x+0f0f0f0f0)
+		      i1 (boole 7 i1 (lsh i1 -4))
+		      i1 (boole 1 i1 #x+00ff00ff0)
+		      i1 (boole 7 i1 (lsh i1 -8)))
+		(boole 1 i1 #x+0000ffff0))))
+       
+(comment
+; versatec-comb-or may be used instead of versatec-comb-and.
+; The output doesn't look as good though.
+(defun versatec-comb-or (i1 i2 j1 j2)
+       (setq i1 (boole 7 i1 j1)
+	     i2 (boole 7 i2 j2)
+	     i1 (versatec-collaps-or i1) 
+	     i2 (versatec-collaps-or i2))
+       (boole 7 (lsh i1 16.) i2))
+
+(defun versatec-collaps-or (i1)
+       (setq i1 (boole 7 i1 (lsh i1 -1)))
+       (versatec-collaps-and i1)))

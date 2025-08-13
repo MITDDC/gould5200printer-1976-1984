@@ -1,0 +1,25 @@
+RLB@MIT-MC 11/06/80 14:23:02
+To: (BUG GLP) at MIT-MC
+GLPSPL is evidently in the wrong lisp. It shares 0 blocks right now.
+
+CFFK@MIT-MC 08/16/80 16:14:48
+To: CMA at MIT-MC
+CC: PLOT2 at MIT-MC, (BUG GLP) at MIT-MC
+The problem is that the resolution of the XGP is slightly
+different in the horiz and vertical directions.  (One
+is 192/inch and the other is 200/inch.  I forget which is
+which.  Actually the horiz resolution is NOT constant across
+the page, as you may have noticed.)  There is no provision
+is PLOT2 for allowing for this difference (partly to maintain
+an easy conversion between plots produced for the XGP, Gould
+printer (which has the same vert. and horiz. resolutions)
+and Tektronixes).  As a temporary fix I suggest you manually
+adjust the WINDOW and XMAX etc. to give yourself the scaling
+you want.  The best place to make a more permanent fix would
+be in the Gould spooler (which is the program that produces
+the  scan files for the XGP).  There is already a provision
+in the spooler for blowing up a plot by a constant scale
+factor (PLOTSCALE, I believe it's called).  So it shouldn't
+be too difficult to make the scales different in the two
+directions.
+

@@ -1,0 +1,14 @@
+
+MACRAK@MIT-MC 11/03/76 13:27:43
+OK now.  GLS explained to me a more or less winning way
+to do things.  I misinterpreted his original instructions.
+So Spoolr need not have the TTY open (does it really matter?).
+To re-open:
+a/ ttyifa
+call 1,q$open$x
+a/ ttyofa
+call 1,q$open$x
+bb$x
+At present, there seems to be a bug so that in the read-eval-print
+loop, Lisp forgets to Terpri after printing, but that's minor.
+

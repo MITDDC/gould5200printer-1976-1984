@@ -1,0 +1,130 @@
+;;; Macros gobbled from RLB 1/17/79
+(eval-when (eval load compile)
+     (SETSYNTAX '/# 'MACRO			; COMPILE CONSTANTS
+		'(LAMBDA () ((LAMBDA (IBASE) (EVAL (READ))) 8.))))
+
+;-----------------------------------------------
+
+;(/@ <abbrev> <expansion> . body) just substitutes <abbrev> for <expansion>
+; in (PROGN . <body>) -- useful for e.g.:
+; (/@ x (arraycall fixnum barfa (1+ i)) (store x (1+ x)))
+
+(defun (/@ macro) (form) 
+  (let (((abbrev expan . body) (cdr form)))
+	`(progn .,(subst expan abbrev body))))
+
+;-----------------------------------------------
+
+;(XPUSH symbol cruft) does (PUSH cruft symbol)
+;but looks nicer when there is a lot of cruft.
+
+(defun (xpush macro) (x) `(push ,(caddr x) ,(cadr x)))
+
+;The first "arg" to a LAMBIND is a list of variable binding specs.
+;The LAMBIND is converted into a LAMBDA accomplishing the bindings.
+;If the spec is a atom, then that atom gets bound to itself.
+;If the spec is a list of length 1, the atom which is (car spec) is bound
+;	to NIL.
+;If the spec is a list longer than 1, the atom which is (car spec) is bound
+;	to what appears in (cadr spec).
+(defun (lambind macro) (x)
+  (break |LAMBIND used, convert to LET| 'T)
+  (do x (cadr x) (cdr x) (null x)
+      (and (car x) (atom (car x)) (rplaca x (list (car x) (car x)))))
+  (rplaca x 'let)
+  x)
+
+
+;The first "arg" to a PROGB is a list of variable binding specs.
+;The PROGB is converted into a LAMBDA accomplishing the bindings.
+;If the spec is an atom, then that atom gets bound to NIL.
+;Otherwise, the atom which is (car spec) is bound to what appears in 
+;	(cadr spec).
+
+(defun (progb macro) (x)
+  (break |PROGB used, convert to LET| T)
+  (rplaca x 'let)
+  x)
+
+;The CATCH* and THROW* macros are like the corresponding fsubrs except that
+;(a) they have the tag first, and (b) they allow any number of forms in the
+;body, returning the last one.  They should get converted to the system 
+;lsubrs *CATCH and *THROW.
+
+(defun (catch* macro) (x)
+  (break |CATCH* macro used, convert to *CATCH| T)
+  (rplaca x '*catch)
+  (rplaca (cdr x) (list 'quote (cadr x)))
+  x)
+
+(defun (throw* macro) (x)
+  (break |THROW* macro used, convert to *THROW| T)
+  (rplaca x '*throw)
+  (rplaca (cdr x) (list 'quote (cadr x)))
+  x)
+
+;The >=, <=, and NOT= macros extend Lisp's subrs.
+;(DEFUN />= MACRO (X) `(NOT (/< ,(CADR X) ,(CADDR X))))
+
+(defun (/>= macro) (x) (|<=> ify| (cdr x) '/<))
+(defun (/<= macro) (x) (|<=> ify| (cdr x) '/>))
+
+(defun |<=> ify| (body pred)
+  (caseq (length body)
+	 (0 '(progn 'T))
+	 (1 `(progn ,(car body) 'T))
+	 (2 `(not (,pred .,body)))
+	 (T (do ((body body (cdr body)) (l))
+		((null (cdr body)) `(and .,(nreverse l)))
+		(push `(not (,pred ,(car body) ,(cadr body))) l)))))
+
+(defun (not= macro) (x) `(not (= ,(cadr x) ,(caddr x))))
+
+;(WHEN <cond> . <body>) evaluates <body> when <cond> is non-nil.
+(defun (when macro) (x)
+  `(cond (,(cadr x) . ,(cddr x))))
+
+;(UNLESS <cond> . <body>) evaluates <body> unless <cond> is non-nil.
+(defun (unless macro) (x)
+  `(cond ((not ,(cadr x)) . ,(cddr x))))
+
+(defun (if macro) (x)
+  (cond ((null (cdddr x)) `(cond (,(cadr x) ,(caddr x))))
+	(t `(cond (,(cadr x) ,(caddr x)) (t . ,(cdddr x))))))
+
+(defun file-length macro (form)
+       `(caddar (directory (list (truename ,(cadr form))) '(words))))
+
+;Self QUoting Internal Datum - if interpreted, like eval first time only,
+;thereafter, quoted.  If compiled and then fasloaded, it gets evaled
+;at fasload time.
+
+(declare (special squid))
+(defun (squid macro) (x)
+       (cond (compiler-state (rplaca x squid))	  ;Can't figure out EVAL-WHEN 
+	     ((rplaca x 'quote)
+	      (rplaca (cdr x) (eval (cadr x)))
+	      x)))
+
+(defun cleanup-lspmac fexpr (x)
+  (when (null x) (setq x '(chmac macro)))
+  (when (memq 'chmac x)
+	(do l '(/# /& /!) (cdr l) (null l)
+	    (setsyntax (car l) 'macro nil)))
+  (when (memq 'macro x)
+	(do l '(/@ lambind progb seqlam catch* throw* /<= />= not=
+		   when unless squid)
+	    (cdr l) (null l)
+	    (remprop (car l) 'macro)))
+  (remprop 'cleanup-lspmac 'expr)
+  (sstatus nofeature lspmac))
+
+(sstatus feature lspmac)
+
+
+;; Local Modes:
+;; Mode:LISP
+;; Comment Column:40
+;; Atom Word Mode:1
+;; END:
+

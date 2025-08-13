@@ -1,0 +1,698 @@
+
+;known bugs - truncation does not happen with print-page-no command
+;wrong page no inserted when page overflow occurs
+(declare (newio t) (setq nfunvars t)
+	 (special lftmar topmar botmar vsp skip size in-file current-height current-font
+		  current-font-no current-baseline current-rot current-width defwidth
+		  lsp eoffn mainarray file-spec-tab xgp-xorg xgp-yorg wrap-pos
+		  wrap-around pagen ppn tv-size-y tv-size-x headrf text-ptr textarray
+		  xgp-commands headarray xgp-defaults dfont xgp-rot def-xgp-rot tv-clear
+		  ards-scale ards-xorg ards-yorg ards-rot ards-thick last-x last-y
+		  ards-mode xorg yorg)
+	 (flonum size ards-scale)
+	 (fixnum lftmar topmar botmar vsp skip current-height current-font-no
+		 current-baseline current-rot current-width defwidth lsp pagen
+		 ppn botmar1 ch i j ollow tvpos rvsp skpcnt basel chrrct ovsp
+		 tlcnt seper sksl yoff bitpos stubit tmp cnt x y x1 y1 x2 y2 wid
+		 wrap-pos text-ptr savefont xgp-rot def-xgp-rot k fontno baseline
+		 height rot ards-xorg ards-yorg ards-rot ards-thick xorg yorg
+		 xgp-xorg xgp-yorg last-x last-y tv-size-y tv-size-x)
+	 (fixnum (ctyi notype) (xgp-x fixnum fixnum) (xgp-y fixnum fixnum)
+		 (rot-x fixnum fixnum fixnum) (rot-y fixnum fixnum fixnum)
+		 (ftyoq notype fixnum fixnum fixnum fixnum)
+		 (ftyo1 fixnum notype fixnum fixnum fixnum fixnum fixnum)
+		 (ards-x fixnum fixnum) (ards-y fixnum fixnum)
+		 (ards-to-tv-setpoint) (ards-to-tv-long) (ards-to-tv-short))
+	 (notype (xgp-print) (lsetup notype notype fixnum) (tv-clear)
+		 (switch-font fixnum)
+		 (multstore notype fixnum fixnum fixnum fixnum fixnum)
+		 (u-score notype fixnum fixnum fixnum fixnum fixnum)
+		 (read-requests notype) (font fixnum notype fixnum)
+		 (ftyo2 fixnum notype fixnum fixnum fixnum fixnum fixnum)
+		 (tv-line fixnum fixnum fixnum fixnum) (skip-pages)
+		 (parse-file-spec notype) (parse-requests notype))
+	 (array* (notype font-table 1 font-names 1))
+	 (*lexpr cfilepos user-error))
+
+(or (get 'tv-clear 'subr) (get 'tv-clear 'expr)
+    (defprop tv-clear ((dsk glpt) ftv fasl) autoload))
+(or (get 'ards-to-tv-setpoint 'subr) (get 'ards-to-tv-setpoint 'expr)
+    (defprop ards-to-tv-setpoint ((dsk glpt) ards fasl) autoload))
+(or (boundp 'wrap-around) (setq wrap-around nil))
+(or (boundp 'in-file) (setq in-file nil))
+(or (boundp 'xgp-commands) (setq xgp-commands nil))
+(or (boundp 'file-spec-tab) (setq file-spec-tab readtable))
+
+;lines of text get buffered into mainarray
+;format of array: row 0 is used for saving rvsp, basel, skpcnt and chrcct
+;row 1 contains a count of the items in the remaining rows of the array
+;and the char that ended the line
+;remaining rows contain font-no, index of char in font array, xpos and yoffset
+;or for underlines -width, depth of underline, beginning and end xpos's
+
+(setq mainarray (array nil fixnum 500. 4))
+(setq headarray (array nil fixnum 200. 4))	; header must have less than 128. chars
+
+(setq xgp-defaults '((topmar . 128.)
+		     (lftmar . 128.)
+		     (botmar . 124.)
+		     (vsp . 6)
+		     (skip . 0)
+		     (size . 11.0)
+		     (headrf . nil))
+      dfont '((dsk fonts) 25fg kst))
+
+(cond ((not (boundp 'def-xgp-rot)) (setq def-xgp-rot 3)))
+
+(defun xgp-print (file)
+(catch
+ (prog (lsp defwidth botmar1 eoffn ppn pagen)
+       (setq in-file (and file (open file '(in image dsk))))
+       (tv-clear)
+       ; should be able to set eoffn so that file is not closed when end is hit
+       (scrimp-commands in-file xgp-commands)
+       (open in-file '(in image dsk))
+       (switch-font 0)
+       (setq lsp (+ current-height vsp)
+	     botmar1 (- (fix (*$ size 192.0)) botmar)
+	     pagen 0
+	     ppn 0
+	     defwidth (cond ((= current-width 0) 20.) (t current-width))
+	     xgp-yorg (cond ((or (= 1 xgp-rot) (= 2 xgp-rot)) tv-size-x)
+			    (t 0))
+	     xgp-xorg (cond ((or (= 1 xgp-rot) (= 0 xgp-rot)) 0)
+			    (t (1- (lsh tv-size-y 5))))
+	     wrap-pos (- (fix (*$ 8.5 200.0)) 100.))
+       (cond ((> (+ topmar lsp) botmar1)
+	      (user-error
+	       '|topmar | topmar '| and botmar | botmar '| overlap, listing aborted/
+| '| lsp | lsp '| botmar1 | botmar1 )
+	      (throw nil xgp-error)))
+       (skip-pages)
+       (cond (eoffn (user-error '|skipped of the end of the file, skip =| skip)
+		    (throw nil xgp-error)))
+       (setq pagen (1+ pagen))	;first page is 1
+       (do ((fff nil nil)	;fff set on ^L and eof
+	    (ollow 0 0)	;amount previous line went below its baseline
+	    (pagep nil nil)	;set when black on page
+	    (tvpos 0 0)	;vert pos
+	    (rvsp topmar topmar);amount of line spacing for this line
+	    			;(default lsp set by ^?^A")
+	    (ovsp 0)		;amount of line spacing for previous line
+	    (linep)		;set when black on line
+	    (npf)		;set if last line caused page overflow
+	    (skpcnt 0)		;number of clear scan lines between lines (set by ^?^C)
+	    (basel 0)		;height of line above base line
+	    (chrrct 0)		;total height of line
+	    (infil in-file)	;source of chars
+	    (ary mainarray)	;where the line gets buffered up
+	    (ards-mode nil)
+	    (saveoffn nil)
+	    (savefont 0))
+	   ((and eoffn (not fff) (not npf)))
+	   (cond ((null infil)
+		  (user-error '|header overflowed onto new page, removing header|)
+		  (setq headrf nil eoffn saveoffn ary mainarray)
+		  (switch-font savefont))
+		 (headrf
+		  (setq saveoffn eoffn eoffn nil text-ptr 0 ary headarray infil nil
+			savefont current-font-no)
+		  (switch-font 0)))
+	   (do nil
+	       (nil)
+	       (cond ((or fff
+			  (progn (setq ovsp rvsp)
+				 (and (not (and npf infil)) (lsetup infil ary (+ rvsp tvpos)))
+				 (setq fff (= (arraycall fixnum ary 1 1) 12.))
+				 (cond ((and fff (null infil)) (tv-clear) (return nil)))
+				 (setq fff (or fff (and eoffn infil))
+				       ards-mode
+				       (not (= (arraycall fixnum ary 1 2) 0))
+				       linep (and (not ards-mode)
+						  (not
+						   (= (arraycall fixnum ary 1 0) 0)))
+				       pagep (or pagep ards-mode
+						 (not
+						  (= (arraycall fixnum ary 1 2) 0)))
+				       rvsp (cond (ards-mode 0)
+						  (t (arraycall fixnum ary 0 0)))
+				       basel (arraycall fixnum ary 0 1)
+				       skpcnt (max 0 (- (arraycall fixnum ary 0 2)
+							 tvpos))
+				       chrrct (arraycall fixnum ary 0 3))
+				 (and fff (not linep))))
+		      (setq pagen (1+ pagen) ppn 0)
+		      (and pagep (tv-formfeed)) (tv-clear)
+		      (setq fff nil)
+		      (return nil)))
+	       (cond ((not linep) (setq rvsp (+ rvsp ovsp)))
+		     (t 
+		      (cond ((= skpcnt 0) (setq skpcnt (max 0 (- ovsp ollow basel)))))
+		      (setq tvpos (+ tvpos skpcnt))
+		      (cond ((or (not (< tvpos botmar1))
+				 (progn (setq ollow (- chrrct basel))
+					(not (< (+ tvpos chrrct) botmar1))))
+			     (setq ppn (1+ ppn))
+			     (cond (npf (setq npf nil)
+					(user-error
+					 '|line too tall at| (cfilepos infil)
+					 '|ignoring it|))
+				   (t (setq npf t fff nil)
+				      (and pagep (tv-formfeed)) (tv-clear)))
+			     (return nil)))
+		      (setq linep (lineoutput ary (+ tvpos basel)))
+		      (and infil (setq npf nil pagep (or pagep linep)))
+		      (setq tvpos (+ tvpos chrrct))))
+	       (cond ((and eoffn (null infil))
+		      (setq infil in-file eoffn saveoffn ary mainarray)
+		      (switch-font savefont))))))
+ xgp-error)
+ (and in-file (close in-file)))
+
+;xgp/ards conventions.
+;
+;^?^E takes 7 bytes setting up ards mode
+;  2 bytes of x - org for the ards graphics
+;  2 bytes of y - org for the ards graphics
+;    (both in xgp coordinates)
+;    If the highest bit of the more significant byte is on,
+;    it means measure relative to current position (lftmar and
+;    vertical position between lines
+;    The next bit is intepreted as a sign bit (two's complement).
+;  1 byte with high 2 bits of rotation (relative to xgp page)
+;    and 5 low order bits with line thickness
+;  2 bytes of scale for ards graphics (integer and fraction parts)
+;
+;^?^E should appear as the first printing thing on a line
+;
+;in this mode ^\, ^], ^^ and ^_ have their ards meanings.
+;  viz:  exit graphics mode, enter setpoint, longvector and
+;  shortvector modes
+;
+;xgp coordinates have x increasing along the line and y
+;  increasing down the page (with [0,0] at the top left)
+;
+;ards coordinates have x increasing to the right and y
+;  increasing up the page (with [0,0] at the bottom left)
+;
+;the vectors and characters are drawn as soon as they are read.
+;  thus page overflow won't occur if you try to write below botmar.
+;
+;the xgp commands which normally cause the start of a new line
+;  are ill-defined in this mode.  however baseline adjusts, column
+;  selects and underscoring should work.
+;
+;^\, ^], ^^ and ^_ can be printed by preceding them with a ^?.
+;
+;ards mode may be exited in three ways.
+;  1 end of file
+;  2 ^L
+;  3 ^?^F (if this method is used, subsequent text should be
+;    placed as though the text between ^?^E and ^?^F didn't exist.
+;
+;^?^F exits ards-mode, see above.
+;
+;^?^G is used to rotate a font.
+;  takes low 5 bits of following byte as font number, and high 2
+;  bits as rotation relative to xgp page does not change fonts nor
+;  rotate current font immediately. 
+;
+;this command may be giving outside ards-mode.  however the action
+;  of printing rotated fonts is only defined in ards-mode.
+;
+;at the beginning of a file font n+16 is defined to be identical to
+;  font n.
+
+(defun lsetup (infil ary tvpos)  ; tvpos only needed for ards-mode
+       (do ((tlcnt 0)	;count of char stored
+	    (seper 0)	;inter-char separation
+	    (sksl 0)	;amount top of font is below current top of line
+	    (yoff 0)	;offset of font's baseline from line's baseline
+	    (rvsp lsp)
+	    (basel current-baseline)
+	    (skpcnt 0)
+	    (chrrct current-height)
+	    (bitpos lftmar)	;x position
+	    (stubit lftmar)	;start underline position
+	    (charflg)	;set when an ards function reads one too many chars
+	    (ch (ctyi infil) (cond (charflg (setq charflg nil) ch) (t (ctyi infil))))
+	    (tmp)	;random
+	    (lftmar1 lftmar)
+	    (ards-mode nil)
+	    (xorg (xgp-x lftmar tvpos))
+	    (yorg (xgp-y lftmar tvpos)))
+	   ((or (= ch -1) (and (not ards-mode) (= ch 10.)) (= ch 12.))
+	    (multstore ary 0 rvsp basel skpcnt chrrct)
+	    (multstore ary 1 tlcnt ch (cond (ards-mode 1) (t 0)) 0)
+	    nil)
+	   (cond ((= ch 0))	;ignored
+		 ((= ch 8)	;backspace
+		  (setq bitpos (max 0 (- bitpos current-width seper))))
+		 ((= ch 9)	;tab
+		  (setq ch (+ defwidth seper)
+			bitpos (- (1- (+ bitpos ch)) lftmar1)
+			ch (lsh ch 3)
+			bitpos (+ lftmar1 (* ch (1+ (// bitpos ch))))))
+		 ((= ch 10.)	;only gets here in ards-mode
+		  (setq yoff (- yoff lsp)
+			xorg (+ xorg (rot-x bitpos (- yoff) current-rot))
+			yorg (+ yorg (rot-y bitpos (- yoff) current-rot))
+			yoff 0 bitpos 0))
+		 ((= ch 13.)	;carriage return
+		  (setq bitpos lftmar1))
+		 ((and ards-mode (= ch 28.)))	;ards exit-graphics
+		 ((and ards-mode (or (= ch 29.) (= ch 30.) (= ch 31.)))
+		  (cond ((= ch 29.)		;ards set-point
+			 (setq ch (ards-to-tv-setpoint)))
+			((= ch 30.)		;ards long-vecotr
+			 (setq ch (ards-to-tv-long)))
+			(t			;ards short-vector
+			 (setq ch (ards-to-tv-short))))
+		  (setq charflg t bitpos 0 yoff 0
+			xorg (ards-x last-x last-y) yorg (ards-y last-x last-y)))
+		 ((= ch 127.)	;rubout
+		  (setq ch (ctyi infil))
+		  (cond ((= ch 1)	;escape 1
+			 (setq ch (ctyi infil))
+			 (cond ((< ch 32.)	;font change
+				((lambda (rot)
+					 (switch-font ch)
+					 (cond ((not (= current-rot rot))
+						(setq xorg (+ xorg (rot-x bitpos 0 rot))
+						      yorg (+ yorg (rot-y bitpos 0 rot))
+						      bitpos 0))))
+				 current-rot)
+				(setq yoff 0)
+				(cond ((= tlcnt 0)
+				       (setq basel current-baseline
+					     chrrct current-height
+					     sksl 0))
+				      (t (setq sksl (- basel current-baseline))
+					 (cond ((< sksl 0)
+						(setq chrrct (- chrrct sksl)
+						      basel current-baseline
+						      sksl 0)))
+				       (setq ch (+ current-height sksl)
+					     chrrct (max chrrct ch)))))
+			       ((= ch 32.)	;column selector
+				(setq bitpos (+ (* 128. (ctyi infil))
+						(ctyi infil))))
+			       ((or (= ch 33.) (= ch 39.) (= ch 41.))	;underscores
+				(setq tmp (ctyi infil)
+				      tmp (+ 3 basel
+					     (cond ((> tmp 63.) (- tmp 128.)) (t tmp))))
+				(cond ((< tmp 0)
+				       (setq sksl (- sksl tmp) basel (- basel tmp)
+					     chrrct (- chrrct tmp) tmp 0)))
+				(cond ((not (< tmp chrrct)) (setq chrrct (+ tmp 1))))
+				(setq tmp (- tmp basel))
+				(cond ((= ch 41.)	;variable width flavor
+				       (setq ch (ctyi infil))
+				       (u-score ary tlcnt ch tmp stubit
+						(- bitpos seper))
+				       (setq chrrct (max chrrct (+ basel tmp ch))))
+				      ((= ch 33.)	;absolute
+				       (u-score ary tlcnt 1 tmp bitpos
+						(+ bitpos (* 128. (ctyi infil))
+						   (ctyi infil))))
+				      (t		;start and stop
+				       (u-score ary tlcnt 1 tmp stubit
+						(- bitpos seper))))
+				(setq tlcnt (1+ tlcnt)))
+			       ((= ch 34.)	;line space, sets rvsp and acts like lf
+				(setq rvsp (ctyi infil))
+				(cond ((not ards-mode)
+				       (multstore ary 0 rvsp basel skpcnt chrrct)
+				       (multstore ary 1 tlcnt 10. 0 0)
+				       (return nil))))
+			       ((or (= ch 35.) (= ch 42.))	;baseline adjusts
+				(setq tmp (ctyi infil)
+				      tmp (cond ((> tmp 63.) (- tmp 128.)) (t tmp)))
+				(cond ((= ch 35.)	;absolute
+				       (setq yoff tmp
+					     sksl (- basel current-baseline tmp)))
+				      (t		;relative
+				       (setq yoff (+ yoff tmp) sksl (- sksl tmp))))
+				(cond ((< sksl 0)
+				       (setq basel (- basel sksl)
+					     chrrct (- chrrct sksl)
+					     sksl 0)))
+				(setq ch (+ current-height sksl)
+				      chrrct (max chrrct ch)))
+			       ((= ch 36.)	;print page number
+				((lambda (base *nopoint l)
+					 (setq l (exploden pagen))
+					 (or (= ppn 0)
+					     (setq l (append l '(46.) (exploden ppn))))
+					 (do nil ((null l))
+					     (setq ch (ftyoq ary tlcnt
+							     (car l) bitpos yoff))
+					     (cond ((not (= ch 0)) 
+						    (setq bitpos (+ bitpos seper ch))
+						    (setq tlcnt (1+ tlcnt))))
+					     (setq l (cdr l))))
+				 10. t nil))
+			       ((= ch 37.)	;heading text 
+				(setq ch (ctyi infil))
+				(cond ((not (> ch 0)) (setq headrf nil))
+				      (t 
+				       (cfilepos
+					infil
+					(prog2 nil (cfilepos infil)
+					       (do ((j 1 (1+ j)))
+						   ((> j ch)
+						    (store
+						     (arraycall fixnum textarray ch)
+						     -1)
+						    nil)
+						   (store
+						    (arraycall fixnum textarray (1- j))
+						    (ctyi infil))))))))
+			       ((= ch 38.)	;start underline
+				(setq stubit bitpos))
+			       ((= ch 40.)	;interchar spacing
+				(setq seper (ctyi infil)))))
+			((= ch 2)	;escape 2 - column increment
+			 (setq ch (ctyi infil)
+			       bitpos (+ bitpos (cond ((> ch 63.) (- ch 128.))
+						      (t ch))))
+			 (or ards-mode (setq bitpos (max 0 bitpos))))
+			((= ch 3)	;escape 3 - scan line selector (sets skpcnt)
+			 (setq ch (ctyi infil)
+			       skpcnt (+ (* 128. ch) (ctyi infil))))
+			((= ch 4)	;escape 4 - vectors (not implemented)
+			 (do ((j 0 (1+ j))) ((= j 11.)) (ctyi infil)))
+			((= ch 5)	;enter ards mode
+			 (setq ards-mode t
+			       ch (ctyi infil) ch (+ (* ch 128.) (ctyi infil))
+			       ch (+ ch (cond ((= (boole 1 ch 1_13.) 0) 0)
+					      (t (- lftmar 1_13.)))
+				     (cond ((= (boole 1 ch 1_12.) 0) 0)
+					   (t (- 1_13.))))
+			       tmp (ctyi infil) tmp (+ (* tmp 128.) (ctyi infil))
+			       tmp (+ tmp (cond ((= (boole 1 tmp 1_13.) 0) 0)
+					      (t (- tvpos 1_13.)))
+				     (cond ((= (boole 1 tmp 1_12.) 0) 0)
+					   (t (- 1_13.))))
+			       ards-xorg (prog2 nil (xgp-x ch tmp)
+						(setq ards-yorg (xgp-y ch tmp)))
+			       ch (ctyi infil)
+			       ards-thick (boole 1 31. ch)
+			       ards-rot (boole 1 3 (+ xgp-rot (lsh ch -5)))
+			       ch (ctyi infil)
+			       ards-scale (+$ (float ch)
+					      (//$ (float (ctyi infil)) 128.0))))
+			((= ch 6)	;exit ards-mode and exit lsetup as though by lf.
+			 (cond (ards-mode
+				(multstore ary 0 rvsp basel skpcnt chrrct)
+				(multstore ary 1 tlcnt 10. 1 0)
+				(return nil))))
+			((= ch 7)	;rotate font
+			 (setq ch (ctyi infil) tmp (boole 1 ch 31.) ch (lsh ch -5))
+			 (font tmp (cdr (font-names tmp)) (+ ch xgp-rot)))
+			(t		;anything else is quoted
+			   (setq ch (ftyoq ary tlcnt ch bitpos yoff))
+			   (cond ((not (= ch 0)) 
+				  (setq bitpos (+ bitpos seper ch))
+				  (cond ((and wrap-around (> bitpos wrap-pos)
+					      (not ards-mode))
+					 (cfilepos infil (- (cfilepos infil) 2))
+					 (multstore ary 0 rvsp basel skpcnt chrrct)
+					 (multstore ary 1 tlcnt 10. 0 0)
+					 (return nil))
+					(t (setq tlcnt (1+ tlcnt)))))))))
+		 ;normal chars
+		 (t (setq ch (ftyoq ary tlcnt ch bitpos yoff))
+		    (cond ((not (= ch 0))
+			   (setq bitpos (+ bitpos seper ch))
+			   (cond ((and wrap-around (> bitpos wrap-pos) (not ards-mode))
+				  (cfilepos infil (1- (cfilepos infil)))
+				  (multstore ary 0 rvsp basel skpcnt chrrct)
+				  (multstore ary 1 tlcnt 10. 0 0)
+				  (return nil))
+				 (t (setq tlcnt (1+ tlcnt))))))))))
+
+;tyi function sets eoffn on end of file.  reads from textarray if infil is nil
+(defun ctyi (infil)
+       (cond (eoffn -1)
+	     (t ((lambda (i)
+			 ;(and (= i 3) (setq i -1))
+			 (and (= i -1) (setq eoffn t)) i)
+		 (cond (infil (tyi infil))
+		       (t (arraycall fixnum textarray
+				     (prog2 nil text-ptr
+					    (setq text-ptr (1+ text-ptr))))))))))
+
+;filepos funtion - uses textarray if first arg is nil
+(defun cfilepos i
+       (cond ((= i 1)
+	      (cond (eoffn -1)
+		    (t (cond ((arg 1) (filepos (arg 1)))
+				 (t text-ptr)))))
+	     ((= i 2)
+	      (cond ((arg 1)
+		     (and eoffn (open (arg 1) '(in image dsk)))
+		     (filepos (arg 1) (arg 2)))
+		    (t (setq text-ptr (arg 2)))))))
+
+;stores a row into the line array
+(defun multstore (ary cnt x y x1 y1)
+       (or (< cnt (cadr (arraydims ary))) (*rearray ary 'fixnum (1+ cnt) 4))
+       (store (arraycall fixnum ary cnt 0) x)
+       (store (arraycall fixnum ary cnt 1) y)
+       (store (arraycall fixnum ary cnt 2) x1)
+       (store (arraycall fixnum ary cnt 3) y1)
+       nil)
+
+;stores a char into the line array
+(defun ftyoq (ary cnt ch x y)
+       (cond (ards-mode (ftyo1 ch current-font
+			       (+ yorg (rot-y x (- y) current-rot))
+			       (+ xorg (rot-x x (- y) current-rot))
+			       current-height current-baseline current-rot))
+	     (t (setq ch (arraycall fixnum current-font ch))
+		(cond ((= ch 0) 0)
+		      (t (multstore ary (+ 2 cnt) current-font-no ch x y)
+			 (arraycall fixnum current-font (+ ch 2)))))))
+
+;store an underscore into the line array 
+(defun u-score (ary cnt wid y x1 x2)
+       (cond (ards-mode
+	      (do ((j 0 (1+ j)))
+		  ((= j wid))
+		  (tv-line (+ yorg (rot-y x1 y current-rot))
+			   (+ xorg (rot-x x1 y current-rot))
+			   (+ yorg (rot-y x2 y current-rot))
+			   (+ xorg (rot-x x2 y current-rot)))
+		  (setq y (1+ y))))
+	     (t (multstore ary (+ 2 cnt) (- wid) y x1 x2))))
+
+;outputs the line array into the tv array with y origin tvpos.  returns nil
+; if eoffn is t and there are only ^C's on the line
+(defun lineoutput (ary tvpos)
+       ((lambda (j)
+		(and eoffn
+		     (do ((i j (1- i)) (k (arraycall fixnum ary j 0)) (ch))
+			 ((or (< i 2) (< k 0)
+			      (not (= k (arraycall fixnum ary i 0)))))
+			 (and (= i j) (setq ch (arraycall fixnum (font-table k) 3)))
+			 (cond ((= (arraycall fixnum ary i 1) ch)
+				(setq j (1- j)))
+			       (t (return nil)))))
+       (do ((i 2 (1+ i)) (k) (fontno -1) (font) (baseline 0) (height 0) (rot 0))
+	   ((> i j) (> j 1))
+	   (setq k (arraycall fixnum ary i 0))
+	   (cond ((< k 0)
+		  (do ((j 0 (1- j))
+		       (y (+ tvpos (arraycall fixnum ary i 1)) (1+ y))
+		       (x1 (arraycall fixnum ary i 2))
+		       (x2 (arraycall fixnum ary i 3)))
+		      ((= j k))
+		      (tv-line (xgp-y x1 y) (xgp-x x1 y) (xgp-y x2 y) (xgp-x x2 y))))
+		 (t (cond ((not (= k fontno))
+			   (setq font (font-table k)
+				 height (arraycall fixnum font 128.)
+				 baseline (arraycall fixnum font 129.)
+				 rot (arraycall fixnum font 130.)
+				 fontno k)))
+		    ((lambda (x y)
+			     (ftyo2 (arraycall fixnum ary i 1) font
+				    (xgp-y x y) (xgp-x x y)
+				    height baseline rot))
+		     (arraycall fixnum ary i 2)
+		     (- tvpos (arraycall fixnum ary i 3)))))))
+	(1+ (arraycall fixnum ary 1 0))))
+
+(defun xgp-x (x y) (+ xgp-xorg (rot-x x y xgp-rot)))
+
+(defun xgp-y (x y) (+ xgp-yorg (rot-y x y xgp-rot)))
+
+(defun rot-x (x y rot) (cond ((oddp rot) (* (- 2 rot) y)) (t (* (- 1 rot) x))))
+
+(defun rot-y (x y rot) (cond ((oddp rot) (* (- rot 2) x)) (t (* (- 1 rot) y))))
+
+;read the scrimp commands at the beginning of the file
+(defun scrimp-commands (infil flags)
+       (mapc (function
+	      (lambda (l)
+		      (set (car l)
+			   (cdr l))
+		      nil))
+	     xgp-defaults)
+       (setq xgp-rot def-xgp-rot)
+       ((lambda (readtable ksetflg txtcmd)
+	   (cond ((and infil
+		       (do ((l flags (cdr l))) ((null l) t)
+			   (and (or (eq (caar l) 'sample)
+				    (and (eq (caar l) 'txtcmd)
+					 (equal (cadar l) 0)))
+				(return nil))
+			   (cond ((eq (caar l) 'rot)
+				  ; need xgp-rot for in file KSET commands
+				  (setq xgp-rot 
+					((lambda (val)
+						 (cond ((fixp val) (boole 1 3 val))
+						       ;((eq '- val) 1)
+						       ;((eq '+ val) 2)
+						       (t 0)))
+					 (cadar l)))))))
+		  (do ((i (ctyi infil) (ctyi infil)) (ibase 10.) (command))
+		      ((or (= i 12.)
+			   (not (or (= i 10.) (= i 11.) (= i 13.) (= i 32.)
+				    (= i 59.)))))
+		      (cond ((= i 59.)
+			     (setq command (errset (read infil)))
+			     (and (null command) (return nil))
+			     (setq command (car command))
+			     (cond ((memq command '(reset squish)))
+				   ((memq command '(skip topmar botmar lftmar vsp))
+				    (set command
+					 ((lambda (l)
+						  (cond ((fixp l) l)
+							(t (cdr (assoc
+								 command
+								 xgp-defaults)))))
+					  (read infil))))
+				   ((eq command 'size)
+				    (setq size
+					  ((lambda (l)
+						   (cond ((numberp l) (float l))
+							 (t (cdr (assoc
+								  'size
+								  xgp-defaults)))))
+					   (read infil))))
+				   ((eq command 'kset)
+				    (setq command (parse-requests
+						   (read-requests infil)))
+				    (do ((i 0 (1+ i)) (l command (cdr l)))
+					((null l))
+					(cond ((caar l)
+					       (font i (caar l) xgp-rot)
+					       (font (+ i 16.) (caar l) xgp-rot)
+					       (and (= i 0)
+						    (setq ksetflg t))))))
+				   (t (return nil)))
+			     (setq txtcmd t))))))
+	   (do ((l flags (cdr l)) (command) (l1) (val)) ((null l))
+	       (setq l1 (car l) command (car l1) val (cadr l1))
+	       (cond ((memq command '(skip topmar botmar lftmar vsp))
+		      (set command (cond ((fixp val) val)
+					 (t (cdr (assoc command xgp-defaults))))))
+		     ((eq command 'sample)
+		      (font 1 (mergef (parse-file-specs (nreverse (cdr l1)))
+	'((dsk fonts) 25fg kst))
+			    xgp-rot)
+		      (cond ((not (probef (cdr (font-names 1))))
+			     (user-error (namestring (cdr (font-names 1)))
+					 '|font not found - listing aborted|)
+			     (throw nil xgp-error)))
+		      (setq headrf t)
+		      (textsetup (defheadr (cdr (font-names 1))))
+		      (and in-file (close in-file))
+		      (setq in-file (open '((dsk fonts) codes >) '(in image dsk))))
+		     ((eq command 'rot))		; already done above
+		     ((eq command 'list)
+		      (cond ((null txtcmd)
+			     (setq headrf t wrap-around t)
+			     (textsetup (defheadr (truename in-file))))))
+		     (t
+		      (setq command (parse-requests
+				     (cond ((eq command 'kset) (cdr l1))
+					   (t l1))))
+		      (do ((i 0 (1+ i)) (l command (cdr l))) ((null l))
+			  (cond ((caar l)
+				 (font i (caar l) xgp-rot)
+				 (font (+ i 16.) (caar l) xgp-rot)
+				 (and (= i 0) (setq ksetflg t))))))))
+	   (or ksetflg (progn (font 0 dfont xgp-rot) (font 16. dfont xgp-rot))))
+	file-spec-tab nil nil))
+
+(defun skip-pages nil
+       (or (= skip 0)
+	   (do ((ch (ctyi in-file) (ctyi in-file))) (eoffn)
+	       (cond ((= ch 12.)
+		      (setq pagen (1+ pagen))
+		      (or (< pagen skip) (return t)))
+		     ((= ch 127.)
+		      (setq ch (ctyi in-file))
+		      (cond ((= ch 1)
+			     (setq ch (ctyi in-file))
+			     (cond ((or (= ch 32.) (= ch 41.))
+				    (ctyi in-file) (ctyi in-file))
+				   ((= ch 33.)
+				    (ctyi in-file) (ctyi in-file) (ctyi in-file))
+				   ((or (= ch 34.) (= ch 35.) (= ch 39.) (= ch 40.)
+					(= ch 42.)) (ctyi in-file))
+				   ((= ch 37.)
+				    (setq ch (ctyi in-file))
+				    (do ((j 1 (1+ j))) ((> j ch)) (ctyi in-file)))))
+			    ((= ch 2) (ctyi in-file))
+			    ((= ch 3) (ctyi in-file) (ctyi in-file))
+			    ((= ch 4)
+			     (do ((j 0 (1+ j))) ((= j 11.)) (ctyi in-file)))))))))
+
+(defun defheadr (file)
+       ((lambda (time day date base *nopoint)
+		(setq time (mapcar (function
+				    (lambda (i)
+					    (cond ((< i base) (cons 48. (exploden i)))
+						  (t (exploden i)))))
+				   time)
+		      time (append (car time) '(58.) (cadr time) '(58.) (caddr time))
+		      day (exploden day)
+		      day (cons (car day) (mapcar (function (lambda (i) (+ i 32.)))
+						  (cdr day)))
+		      date (append (exploden (cdr (assoc (cadr date)
+							 '((1 . |January|)
+							   (2 . |February|)
+							   (3 . |March|)
+							   (4 . |April|)
+							   (5 . |May|)
+							   (6 . |June|)
+							   (7 . |July|)
+							   (8 . |August|)
+							   (9 . |September|)
+							   (10. . |October|)
+							   (11. . |November|)
+							   (12. . |December|)))))
+				   '(32.)
+				   (exploden (caddr date))
+				   '(44. 32. 49. 57.) (exploden (car date))))
+		(maknam (append day '(44. 32.) date '(32. 32. 32.) time
+				(exploden '|          |)
+				(exploden (namestring file))
+				(exploden '|          |)
+				(exploden '|Page |)
+				'(127. 1 36. 13. 10.))))
+	(status daytime) (status dow) (status date) 10. t))
+
+(setq textarray (array nil fixnum 129.))
+
+(defun textsetup (text)
+       (do ((l (exploden text) (cdr l)) (i 0 (1+ i)))
+	   ((or (null l) (= i 128.))
+	    (store (arraycall fixnum textarray i) -1)
+	    (setq text-ptr 0)
+	    nil)
+	   (store (arraycall fixnum textarray i) (car l))))
+

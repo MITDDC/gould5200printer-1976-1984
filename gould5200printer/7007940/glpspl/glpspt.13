@@ -1,0 +1,197 @@
+;;; temporary kludge
+
+(defun create-page-buffer-array (x y) (array nil fixnum x y))
+(declare (special pb))
+(defun reconfigure-page-buffer-array (x y)
+   (let (((() xdim ydim) (arraydims pb)))
+   	(cond ((not (and (= x xdim) (= y ydim)))
+	       (*rearray pb 'fixnum 1 1) (GC)
+	       (*rearray pb 'fixnum x y)))))
+
+(LAP	SET-UNAME SUBR)
+(ARGS	SET-UNAME (NIL . 0))
+	(*SUSET 0 (% 0 0 R 54))	; GET .OPTION USET
+	(MOVEI A 'NIL)
+	(TLNE R 10000)			; SKIP IF NOT UNDER A DDT
+	(POPJ P)
+WAIT	(*SUSET 0 (% 0 0 R 65))	; GET SUPERIOR'S INDEX
+	(AOJN R WAIT)
+	(MOVEI A 'T)
+SETLP	(MOVE T (% (SIXBIT UNAME)))	;SET THE XUNAME
+	(MOVE TT (% (SIXBIT GLP)))
+	(*CALL 0 USRVAR)
+	(JRST 0 USRERR)			;IF LOST, MUST BE DUE TO ANOTHER SPOOLER
+	(MOVE T (% (SIXBIT XUNAME)))	;SET THE UNAME
+	(*CALL 0 USRVAR)
+	(*LOSE 1000)			;NO REASON TO LOSE HERE...
+	(MOVE T (% (SIXBIT SNAME)))	;SET THE SNAME SO PEEK LOOKS NICE
+	(MOVE TT (% (SIXBIT SPOOLR)))
+	(*CALL 0 USRVAR)
+	(*LOSE 1000)
+	(*SUSET 0 (% 0 0 (% 200000) 400002))	; %TBNVR TELL IT NOT TO HANG WAITING FOR A TTY
+	(POPJ P)
+
+USRVAR	(SETZ)
+	(SIXBIT USRVAR)
+	(0 0 (% -1))
+	(0 0 T)
+	(0)
+	(SETZ 0 (% MOVE 0 TT))
+
+;;; COME HERE WHEN WE LOST - SHOULD ONLY HAPPEN IF A SPOOLER ALREADY EXISTS
+
+USRERR	(*CALL 0 USROPN)		; TRY TO OPEN USR DEVICE TO SPOOLR
+	(*LOSE 1000)			; COULDN'T GET IT, BETTER PUNT
+	(*SUSET 0 (% 0 0 TT 54))	; GET OPTION WORD
+	(*USET 11 (% 0 0 T 7))		; CHECK STOP BIT
+	(TLNE T 10000)
+	(JRST 0 DEAD)			; STOPPED, SO HE MUST BE DEAD
+	(*LOGOUT)			; MUST BE OK, SO WE ARE NOT NEEDED
+	(*BREAK 16 40000)		; LOGOUT OR PUNT
+DEAD	(*USET 11 (% 0 0 T 23))		; FLUSH HIM
+	(*GUN T 0)
+	(*CLOSE 11)
+	(JRST 0 SETLP)			;GO TRY AGAIN
+
+USROPN	(SETZ)
+	(SIXBIT OPEN)
+	(0 0 11 1000)
+	(0 0 14 5000)
+	(0 0 (% (SIXBIT USR)))
+	(0 0 (% (SIXBIT GLPTR)))
+	(SETZ 0 (% (SIXBIT SPOOLR)))
+()
+
+
+(lap lock-pages subr)
+(args lock-pages (nil . 0))
+	(movei a 't)
+	(call 1 'nointerrupt)
+	(hrlzi t -256.)
+loop	(*call 0 type)
+	 (*value 0)
+	(skipn 0 tt)
+	 (jrst 0 nopage)
+	(skipl 0 tt)
+	 (troa tt 12000)
+	  (tro tt 102000)
+	(*call 0 lock)
+	 (*value 0)
+nopage	(aobjn t loop)
+	(movei a 0)
+	(call 1 'nointerrupt)
+	(movei t 'T)
+	(movem t (special pages-locked))
+	(popj p)
+
+lock	(setz)
+	(sixbit corblk)
+	(movei 0 0 tt)
+	(movei 0 -1)
+	(movei 0 0 t)
+	(setzi 0 -1)
+type	(setz)
+	(sixbit cortyp)
+	(movei 0 0 t)
+	(setzm 0 tt)
+()
+
+(lap unlock-pages subr)
+(args unlock-pages (nil . 0))
+	(movei a 't)
+	(call 1 'nointerrupt)
+	(hrlzi t -256.)
+loop	(*call 0 type)
+	 (*value 0)
+	(skipn 0 tt)
+	 (jrst 0 nopage)
+	(skipl 0 tt)
+	 (troa tt 11000)
+	  (tro tt 101000)
+	(*call 0 unlock)
+	 (*value 0)
+nopage	(aobjn t loop)
+	(movei a 0)
+	(call 1 'nointerrupt)
+	(setzm 0 (special pages-locked))
+	(popj p 0)
+
+unlock	(setz)
+	(sixbit corblk)
+	(movei 0 0 tt)
+	(movei 0 -1)
+	(movei 0 0 t)
+	(setzi 0 -1)
+type	(setz)
+	(sixbit cortyp)
+	(movei 0 0 t)
+	(setzm 0 tt)
+()
+
+;;; Crockish IOC error handler
+
+(lap	set-ioc subr)
+	(movei t lose)
+	(movem t iocins)    ;smash IOCINS
+	(popj p)
+lose	(hrri r lose1)
+	(hrli r error)
+	(tlo r 400000)
+	(aos 0 0 flp)
+	(popj flp)
+error	(0)
+lose1	(jcall 0 (function error))  ;just punt
+()
+
+;;; Takes a fixnum and returns a list of ASCII characters.
+;;; NULL terminates the string.
+
+(LAP	DECODE-ASCII SUBR)
+	(move f 0 a)		;get the number
+	(hrli d 440700)		;make a byte pointer
+	(hrri d f)
+	(setz a)		;A starts out with NIL
+	(setz b)		;B starts out with NIL also
+loop	(ildb tt d)
+	(jumpe tt done)
+	(jsp t fxcons)		;make a number
+	(call 2 (function cons))
+	(movei b 0 a)
+	(tlne d 700000)
+	(jrst 0 loop)
+done	(jcall 1 (function nreverse))
+()
+
+(LAP DECODE-SIXBIT SUBR)
+	(move f 0 a)		;get the number
+	(hrli d 440600)		;make a byte pointer
+	(hrri d f)
+	(setz b)		;B starts out with NIL
+loop	(ildb tt d)
+	(addi tt 40)		;turn 6bit into ascii
+	(jsp t fxcons)		;make a number
+	(call 2 (function cons))
+	(movei b 0 a)
+	(tlne d 770000)
+	(jrst 0 loop)
+done	(jcall 1 (function nreverse))
+()
+
+;;; Convert 8-bit bytes into a list of characters
+
+(lap	explodew subr)
+	(move f 0 a)	    ;get the word
+	(hrli d 441000)	    ;get a byte pointer in d
+	(hrri d f)
+	(setz a)
+loop	(move b a)
+	(ildb tt d)	    ;get a byte
+	(jsp t fxcons)
+	(call 2 (function cons))
+	(tlne d 700000)
+	(jrst 0 loop)
+	(popj p)
+()
+
+(set-ioc)			 ; set IOC to give an error
+

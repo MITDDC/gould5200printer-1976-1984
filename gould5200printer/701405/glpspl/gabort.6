@@ -1,0 +1,9 @@
+	title Gould Listing Abort Hack
+
+go:	.call [setz ? sixbit/OPEN/ ? 1000,,0 ? 5000,,5 ? [sixbit/CLI/]
+	       [sixbit/GLP/]
+               setz [sixbit/GLPSPL/]]
+	jfcl
+	.value [asciz/:KILL /]
+
+end go

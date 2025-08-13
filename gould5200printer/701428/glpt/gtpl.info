@@ -1,0 +1,81 @@
+;;;	Graphics spooler for a matrix printer (Gould 5200)
+
+
+(Comment Spooler documentation)
+; 
+; Spool messages consist of file specifications and option flags.
+; File specs are in the form:
+;     <output filespec>_<filespec1><flags>,<filespec2><flags>,...  ,
+; where <filespec> is a standard ITS file spec (i.e. a sequence of
+; up to 4 words with the device and directory distinguished by : and ;
+; prefixes).  Flags are local to the preceeding filespec.  The optional
+; form  _(<global flags>)<filespec1>,... is also be allowed.
+; <flags> are single letters, possibly followed by arguments.  The 2
+; forms for flags are (as in the @ program) (<flag><flag>...) or
+; /<flag>/<flag> ...  the chars "/","(",")",",","^q"  can be quoted with ^q.
+; Suggested flags:
+; Control flags:
+; p	- Priority, preceded by a single digit (0-9)
+; b	- Black background
+; r	- Rotate the page.
+; v	- Verify.  Inform the user when his file has been printed (queued?)
+; k	- Kill (delete) the file once it has been printed.
+; u	- Unspool the file (i.e. remove it from the queue).
+; !	- Wraparound on over run lines (default is truncate unless in ;list mode)
+; *	- Reset the world
+; ?	- Send a status report
+; c	- Copies.  Preceeded by an numeric argument.
+; w	- Page width
+; z	- Page size
+; ~	- Don't cut paper. (Default is to cut at page boundaries)
+; @	- Indirect.  (i.e. treat file as a command file)
+; o	- Output format.  Next char: g (gould scan), x (xgp scan),
+;		 b (bit image) - /o[x]
+; s	- Spool option.  To suppress this default for gould or xgp output, use -s
+; &	- Force image mode encoding (no scan compression).
+; $	- Append a graphic tail sheet.
+; File type flags (mutually exclusive - defaults to l):
+; a	- Ards.  File has chars plus ards graphics.
+; x	- Xgp.	File has xgp commands.
+; l	- List the file like the ;list command of the xgp spooler
+; h	- List the file LPT style (for ASCII files).
+; t	- Tektronix.  File has tektronix graphics commands (from a netout file, etc.)
+; y	- Tty graphics (software tty conventions, yet to be established).
+; i	- File is image format.  Followed by b (bit image), x (xgp scan format), 
+;         or g (gould scan format). e.g. /i[x].  note /i is the same as /i[b]
+; d	- File is dplt format
+; A digit preceeding any of the file type flags is a page number at which
+; to start printing. + and - are used as prefixes to turn flags on or off (e.g. -!)
+
+; When an output file spec. is given, spooling is defaulted to being suppressed.
+
+;
+;                        Maintainers' documentation.
+;
+;  To create a new spooler, compile this file and load it into a (new i/o)
+;  Lisp.  Then say (init-dump) and it will take care of initializing and
+;  dumping itself.
+;
+;                         Operation of the program.
+;
+;  Normally, it runs disowned.  It reads mail from GLMAIL < .GLPT.; , interprets
+;  it, and enters the interpretation into -GLPT- QUEUE .GLPT.; as printed
+;  list structure.  Then one by one it takes the entries off the queue
+;  and processes the files.  Output goes to GLPT > files, which are then
+;  sent to the Gould by the unspooler.
+;
+;                                  Errors.
+;
+;  Errors are reported to the user with the function user-error (qv).
+;
+;                                  Crocks.
+;
+;  Currently, the way the program senses the presence of mail files is
+;  to periodically (with alarmclock) check.  A better way would be to
+;  have some system of direct communication with the GTPL program, for
+;  instance a CLI interrupt or a shared page.  The advantages would be:
+;  no load on the system when nothing was happening; faster response;
+;  no change of working set to process the interrupt while processing a file
+;  (deferring interrupts in the present scheme would accomplish this
+;  last, but would slow down error messages).
+;  There is currently no status display.

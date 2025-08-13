@@ -1,0 +1,421 @@
+JLK@MIT-MC 11/12/76 17:49:04
+To: (BUG GTPL) at MIT-MC
+no cut mode does not work
+
+CFK@MIT-MC 11/12/76 01:49:39
+To: (BUG GTPL) at MIT-MC
+Even if there are several pieces of mail waiting for processing,
+the SPOOLR only processes one at a time.  Why?
+
+CFK@MIT-MC 11/11/76 19:48:13
+To: (BUG GTPL) at MIT-MC
+What a loss.  GSPOOL clobbers the [QUEUE FILE to what it's doing.
+
+CFK@MIT-MC 11/08/76 16:48:44
+To: (BUG GTPL) at MIT-MC
+spoolr doesn't have current item in [queue file.
+
+CFK@MIT-MC 11/06/76 14:58:12 Re: tab error in ascii print
+To: (BUG GTPL) at MIT-MC
+The problem is illutrated by:
+      1	2
+which has a tab between the 1 and the 2.  This comes out as
+      1		2
+
+CFK@MIT-MC 11/06/76 14:51:16
+To: (BUG GTPL) at MIT-MC
+:gspool glpt;tab error/h
+shows a tabbing error.  The 4 is placed wrong.
+
+CFK@MIT-MC 11/03/76 13:33:35
+To: (BUG GLPT) at MIT-MC, MACRAK at MIT-MC
+	If a font has changed since it was loaded into the
+	Spooler, it doesn't notice it.
+Thats right.  I have no plans to change this.
+
+
+MACRAK@MIT-MC 11/03/76 13:32:04
+To: (BUG GLPT) at MIT-MC
+If a font has changed since it was loaded into the
+Spooler, it doesn't notice it.
+
+CFK@MIT-MC 10/31/76 15:50:22
+To: (BUG GTPL) at MIT-MC
+XGP/ARDS conventions are documented in XGPARDS DOC CFK;.  Additional
+features will be added as the need arises.
+
+CFK@MIT-MC 10/31/76 11:53:17
+To: (BUG GTPL) at MIT-MC
+.glpt.;dump op  has been deleted.  the bug can be recreated by doing
+:gtpl cfk;test1.  the [glpt] file that this produces is in cfk;test1
+[glpt]
+
+CFK@MIT-MC 10/30/76 22:53:20
+To: (BUG GTPL) at MIT-MC
+:gtpl .glpt.;dump op/i
+produces a [glpt] file which causes the gould to do a lot of formfeeds
+
+CFK@MIT-MC 10/29/76 22:02:30
+To: (BUG GLPT) at MIT-MC
+spooler sometimes gets stuck doing RCPOS.  this happens when
+the file it is processing tries to go away (I think).
+
+CFK@MIT-MC 10/28/76 12:19:42
+To: (BUG GTPL) at MIT-MC
+There should be a GTPL1 program, that writes the GLMAIL > file
+directly.  That way, we wouldn't have to sit around waiting for the
+MAILer.
+
+CFK@MIT-MC 10/28/76 01:41:43
+To: (BUG GTPL) at MIT-MC
+1] Commonly used fonts are now kept in the right format on .GLPT.;  You
+can add your favorite font to by putting its name in .GLPT.;GLDFNT
+FONTS.
+2] The positioning of plots is now determined by BOTMAR and LFTMAR
+(default values 150.).  These give the position of [0,0] on the
+Tektronix screen from the bottom and left sides of the paper (looking at
+the paper the rigth way up).
+3] The default orientation of plots is determined by DEF-ARDS-ROT;  this
+should be bound to 3 for output to the XGP.
+
+CFK@MIT-MC (Sent by JLK@MIT-MC) 10/27/76 14:21:30
+To: (BUG GTPL) at MIT-MC
+1]  Check that the base in which a queue file is written is the same as the
+one it is read in.  (Yorg seems to screw up with plots when the spooler
+is re-started with a non-null queue file)
+2]  XGP output doesn't work for ards files.  (It produces e.g. 5 scn .glpt.;)
+
+JLK@MIT-MC 10/25/76 08:28:17
+To: (BUG GTPL) at MIT-MC
+THE SPOOLER SHOULD TRY HARDER TO HANDLE FATAL ERRORS SUCH AS DEV FULL AND
+DIR FULL ERRORS.  THIS IS INFLICTING PAIN AND CONFUSION ON UNKNOWLEDGEABLE USERS.
+
+CFK@MIT-MC 10/21/76 10:38:19
+To: (BUG GLPT) at MIT-MC
+XGP output comes in an assortment of lengths.
+
+CFK@MIT-MC 10/16/76 15:36:05
+To: (BUG GTPL) at MIT-MC
+SPLNCH SHOULD CHECK FOR EXISTENCE OF SPOOLS
+
+CFK@MIT-MC 10/13/76 10:29:01
+To: (BUG GLPT) at MIT-MC
+test
+
+CFK@MIT-MC 10/13/76 10:18:39
+To: (BUG GLPT) at MIT-MC
+Change in behaviour:  Now when I key in the boot loader, and attempt
+to load the abs loader (both old and new ways) the boot loader doesn't
+stop.
+
+CFK@MIT-MC 10/12/76 22:49:28
+To: (BUG GLPT) at MIT-MC
+reloaded the 11.  tried to get a plot out on the goulg.  only the first
+scan line of the plot came out, before the 11 crashed.  the boot loader
+is clobbered.
+
+COMSAT@MIT-MC 10/12/76 11:18:23 Re: Msg of 11:18:22
+To: (BUG GTPL) at MIT-MC
+CC: COMSAT-WIZARD at MIT-MC
+Couldn't open pgm file - FILE NOT FOUNDMessage follows:
+-------
+_JLK;RAYPLT >/H
+
+CFK@MIT-MC 10/11/76 12:51:53
+To: (BUG GTPL) at MIT-MC
+page size command for /h switch
+
+CFK@MIT-MC (Sent by CFK0@MIT-MC) 10/08/76 19:46:49
+To: (BUG GTPL) at MIT-MC
+a null filespec doesn't work for /x[sample ..]
+
+FYFC@MIT-MC 10/05/76 23:01:57
+To: (BUG GTPL) at MIT-MC
+The gould is bust.  It seemed that the allocator for TTY 26 was bust
+so I assembled GLPT;GLDMUX OLD.  Now the stuff gets sent out OK,
+but the 11 doesn't ship it to the GOULD.
+
+CFK@MIT-MC 10/04/76 11:03:13
+To: (BUG GTPL) at MIT-MC
+It should be possible to combine H and L switches
+
+JLK@MIT-MC 10/04/76 08:36:54
+To: (BUG GTPL) at MIT-MC
+if the tektronix is powered off, infinite ^@'s are received and sent
+by the pdp-11 to the pdp-10, thus hanging the IO-11.
+
+JLK@MIT-MC 09/28/76 16:27:58
+To: (BUG GTPL) at MIT-MC
+spoolr should close big files after TV=FORMFEED not before.
+
+CFK@MIT-MC 09/23/76 20:41:55
+To: (BUG GTPL) at MIT-MC
+there should be some switch saying "only put one page
+into an output file".  this is important because the
+printer is so slow, that you want it to start printing as
+soon as possible.
+
+CFK@MIT-MC 09/21/76 20:25:26
+To: (BUG GTPL) at MIT-MC
+:gtpl .teco.;tecm^r doc still doesnt work
+
+cfk@MIT-MC (Sent by FYFC@MIT-MC) 09/18/76 17:40:06
+To: (BUG GTPL) at MIT-MC
+The Gould doesn't work.  The unspooler appears to be unable
+to send stuff to the 11,  although it does manage to establish
+a connection.
+I con't reload the 11.  The Lisp responds to a ^^ but not
+to a ^\.
+
+CFK@MIT-MC 09/14/76 09:05:57
+To: (BUG GTPL) at MIT-MC
+paper low interrupt from the gould doesn't cause the pdp-11
+to request the page to be re-sent
+
+CFK@MIT-MC 09/10/76 00:19:22
+To: BUG-GTPL at MIT-MC
+test
+
+CFK@MIT-MC 09/10/76 00:05:51
+To: BUG-GTPL at MIT-MC
+:gtpl cfk;thp txjout  bombs after 2%.  its queue file contains
+(xgp-commands quote ((list)))
+:gtpl cfk;thp txjout/x[list] wins.  its queue file contains
+(xgp-commands (list))
+(in the first case the bombage is presumable caused by
+applying read-file-specs to quote, when that function expects
+a list)
+also the pdp11 is back in the mode in which it enables the
+printer, but doesn't actually print anything.
+
+CFK@MIT-MC 09/10/76 00:04:17
+To: BUG-GTPL at MIT-MC
+:gtpl cfk;thp txjout  bombs after 2%.  its queue file contains
+(xgp-commands quote ((list)))
+:gtpl cfk;thp txjout/x[list] wins.  its queue file contains
+(xgp-commands (list))
+(in the first case the bombage is presumable caused by
+applying read-file-specs to quote, when that function expects
+a list)
+also the pdp11 is back in the mode in which it enables the
+printer, but doesn't actually print anything.
+
+CFK@MIT-MC 09/09/76 23:48:39
+To: BUG-GTPL at MIT-MC
+I fixed the quote ((list)) bug.  i fixed xgp > so that the list
+spec only takes effect if there are no scrimp commands in the file.
+
+CFK@MIT-MC 09/09/76 23:30:28
+To: BUG-GTPL at MIT-MC
+:gtpl cfk;thp txjout  bombs after 2%.  its queue file contains
+(xgp-commands quote ((list)))
+:gtpl cfk;thp txjout/x[list] wins.  its queue file contains
+(xgp-commands (list))
+(in the first case the bombage is presumable caused by
+applying read-file-specs to quote, when that function expects
+a list)
+also the pdp11 is back in the mode in which it enables the
+printer, but doesn't actually print anything.
+
+AHR@MIT-MC 09/09/76 14:32:17
+To: BUG-GTPL at MIT-MC
+boot loader on pdp11 clobbered
+
+CFK@MIT-MC 09/08/76 22:39:07
+To: BUG-GTPL at MIT-MC
+:gtpl foo/l[20fg] should now be the same as :gtpl foo/l[kset 20fg]
+
+CFK@MIT-MC 09/07/76 20:48:02
+To: BUG-GTPL at MIT-MC
+:GTPL .TECO.;TECM^R DOC/L[KSET 25FR2]
+APPEARS TO DO NOTHING (BECAUSE OF THE ^ MAYBE?)
+
+CFK@MIT-MC 09/06/76 13:20:22
+To: BUG-GTPL at MIT-MC
+SPOOLR WAS GETTING NOWHERE ON GLDMUX 21.  (IT WAS USING 70% OF THE
+MACHINE.)   I STOPPED IT, RENAMED IT BADSP, AND RENAMED ITS QUEUE
+FILE, BADQ FILE.
+
+CFK@MIT-MC 09/04/76 14:21:12
+To: BUG-GTPL at MIT-MC
+why not :mail to the user if he specifies a non-existent file.?
+
+KH@MIT-MC 09/04/76 06:07:25
+To: BUG-GTPL at MIT-MC, CFK at MIT-MC
+
+CFK@MIT-MC 09/03/76 22:20:36
+To: BUG-GTPL at MIT-MC
+the cutter squeaks, dammit!!
+
+I'm sorry, I'll put in adjustible delays in the software so that it
+will play "Sweet Sue" instead!
+
+CFK@MIT-MC 09/03/76 22:20:36
+To: BUG-GTPL at MIT-MC
+the cutter squeaks, dammit!!
+
+JLK@MIT-MC 09/03/76 14:15:21
+To: BUG-GTPL at MIT-MC
+FILE PARSEING OF :GTPL .../I
+LOSES.
+
+KH@MIT-MC 09/03/76 03:32:10
+To: BUG-GTPL at MIT-MC
+MOST RATIONAL EXPLANATION FOR STRANGE CHARACTER MAPPING IS HARDWARE
+LOSSAGE IN GOULD, SAY IN A HOLDING REGISTER FOR CHARACTER DECODING
+
+KH@MIT-MC 09/03/76 03:30:12
+To: BUG-GTPL at MIT-MC
+CNTL BACKSLASH PROBLEM FIXED.
+
+KH@MIT-MC 09/03/76 02:34:25
+To: BUG-GTPL at MIT-MC
+THE ALLOCATION BUG HAS BEEN FIXED, HOWEVER, ON A LONG LISTING, I NOTICED THAT
+THE 20 BIT WAS DROPPED ON SOME CHARACTERS (INTERMITTENTLY) IN COLUMN 98, CONVERTING
+P TO @, S TO C, ETC.  ALSO OUTSTANDING IS THE THE PROBELM WITH ^\ ON THE TEKTRONIX,
+WHICH CAUSES THE WORLD TO HANG.
+
+KH@MIT-MC (ARI) 09/01/76 03:39:23
+To: BUG-GTPL at MIT-MC
+TEKTRONIX TCTYP STILL HAS +%TPORS SET AS A DEFAULT
+
+KH@MIT-MC (ARI) 09/01/76 03:37:07
+To: BUG-GTPL at MIT-MC
+SMEARING STILL OCCURRING OVER SMALL SECTIONS OF PAGE, NOTICIBLE
+AS A BLURRING ABOVE CHARACTERS.
+
+KH@MIT-MC (ARI) 09/01/76 03:33:30
+To: BUG-GTPL at MIT-MC
+PDP-11 UP AND RUNNING AGAIN ... CURSORY EXAMINATION SAYS THAT DMA IDLE
+PROBLEM NOT SO PERSISTENT (HASN'T HAPPENED AFTER 2 TRIALS) ... ALLOCATION
+SCREWAGE PROBLM STILL WITH US, STILL SUSPECT MULTIPLEXOR LOSSAGE SOMEWHERE.
+
+JLK@MIT-MC (KH) 08/25/76 00:29:42
+To: BUG-GTPL at MIT-MC
+TO HACK ARC DEVICES, COPY AND DELETE.
+
+KH@MIT-MC (KH0) 08/24/76 01:39:44
+To: BUG-GLPT at MIT-MC
+GOULD IS CURRENTLY INOPERATIVE DUE TO KL-10/PDP-11 MULTIPLEXOR BUGS
+
+CFK@MIT-MC 08/22/76 11:55:38
+To: BUG-GTPL at MIT-MC
+i reloaded the 11 from scratch (keyed in boot loader) and loaded
+gltp;gould bin.  had some stuff sent to the gould.  after the
+first source file's worth (8 pages), the tail sheet came
+out.  it claimed that 1 page was bad.  subsequent files didn't
+come out on the printer, although the unspooler sent them and deleted
+the [glpt] files (i thought this wasn't supposed to happen any more).
+in the meanwhile the 11 died a couple of times, and the boot loader
+is clobbered (filled with 0's or 400's).  please fix.
+
+CFK@MIT-MC 08/19/76 16:09:12
+To: BUG-GTPL at MIT-MC
+EITHER DO NOT REAP THE GBUG MAIL FILE, OR PUT INFO ON
+HOW TO USE THE SPOOLER/UNSPOOLER IN THEIR VARIOUS DEBUGGING 
+MODES IN SOME EASILY REMEMBERED PLACE (GTPL INFO?).
+
+CFK@MIT-MC 08/19/76 16:05:59
+To: BUG-GTPL at MIT-MC
+THE /G SWITCH CAUSES THE SPOOLER TO HALT (_10!0)
+
+CFK@MIT-MC 08/19/76 16:04:00 Re: FURTHER SYMPTOMS ON PAGE CUTTING
+To: BUG-GTPL at MIT-MC
+PAGE CUTTING WORKS AT THE BEGINNING AND END OF THE OUTPUT FILE,
+BUT NOT AT PAGE BREAKS WITHIN THE FILE.
+
+CFK@MIT-MC 08/19/76 15:58:36
+To: BUG-GTPL at MIT-MC
+:GTPL ARC:CFK;XGP/H
+ONLY PRODUCES AN OUTPUT FILE 14 WORDS LONG, ALTHOUGH
+THE SOURCE FILE IS MUCH LONGER.
+
+CFK@MIT-MC 08/19/76 15:53:25
+To: BUG-GTPL at MIT-MC
+I CAN'T SEEM TO MAKE THE /H SWITCH WORK.  (THE SPOOLER PRODUCES
+A FILE AND THE UNSPOOLER SENDS IT OUT, BUT NOT A SQUEAK OUT OF
+THE GOULD.)
+
+CFK@MIT-MC 08/19/76 10:05:37
+To: BUG-GTPL at MIT-MC
+PAPER IS NOT CUT IN XGP MODE
+
+CFK@MIT-MC 08/19/76 10:04:48
+To: BUG-GTPL at MIT-MC
+XGP OUTPUT IS APPROX 10 TIMES SLOWER THAN ON THE OLD GOULD 5200.  WHY?
+THE INK IS SMEARED.
+ON DOING :GTPL CFK;ARC:XGP/L[KSET 20FG] OUTPUT STOPPED AFTER THE 2ND PAGE,
+ THE PDP11 LIGHTS KEPTED ON BLINKING THOUGH.  THE UNSPOOLER WAS TRYING TO
+ SEND OUT [GLPT] 2.  RESTARTING GOULD/PDP11/UNSPOOLER DIDN'T CORRECT THIS.
+
+KH@MIT-MC 08/19/76 01:06:25
+To: BUG-GTPL at MIT-MC
+RUN-LENGTH ENCODING WORKS, BUG WAS IN INTERACTION BETWEEN COMMMON
+VARIABLES USED IN IMAGE MODE PROCESSING AND RUN-LENGTH DECODING.
+HOWEVER, GRAPHICS IS EXTREMELY SLOW COMING OUT OF THE PRINTER, SO
+SLOW THAT THERE IS NO VISIBLE DEGRADATION OF SPEED OF THE TEKTRONIX
+WHILE PRINTER IS BEING USED.  THERE DOES EXIST A BUG WHERBY IN LONG
+ASCII LISTINGS, THE PDP-11 WILL HALT DUE TO AN ERROR IN THE ALLOCATION
+SOFTWARE, THAT INICATES MORE CHARACTERS WERE RECEIVED THAN ALLOCATED
+FOR.  SINCE THE PROBLEM IS NOT CONSISTENT (I.E. IT DOES NOT OCCUR IN THE
+SAME PLACE RELATIVE TO THE PRINTED PAGE), THIS MIGHT BE A KL-10 MULTIPLEXOR
+LOSSAGE.  IN ADDITION, OCCASIONLA THE GOULD WILL REFUSE TO PRINT.  EXAMINATION
+OF THE GOULD'S COMMAND-STATUS REGISTER REVEALS THAT DMA IS NOT PRESENT.
+USUALLY THIS PROBLEM CAN BE MADE TO TEMPORARILY DISAPPEAR BY GOING OFFLINE,
+POWERING DOWN, POWERING UP, AND GOING ONLINE AGAIN.
+
+TO DO:
+(1) * INPUT SPECIFICATION ERROR HANDLER (INFORMER) - MAIL-ERROR
+(2)   STATUS IDEAS (/?, GTPL^F, [GLPT] FILES, ??)
+(3) * MORE OPTIONS (VERIFY, PAGE SIZE, ETC.)
+(4) * DEFAULT FILE TYPE BY LOOKING AT BEGINNING OF THE FILE. (SEE BELOW)
+(5)   DPLT FORMAT FILES.
+(6)   XGP OUTPUT.  SPOOL TO XGP AS THE DEFAULT? (FLAG AND/OR OUTPUT SPEC SUPPRESS THIS?)
+      WINNING XGP DEFAULTS FOR ARDS, ETC.
+(7) * FIX NUMBERS IN FILE SPECS.  CHECK OUT VARIOUS FILE SPEC FORMATS.
+(8)   GTPL DEVICE , GTPL^K FOR LONG FORM SPECS, GTPL^F FOR STATUS INFO.
+(9)   XGP-IMAGE INPUT TO GOULD OUTPUT (WITH ROTATION OPTION, DEFAULT).
+(10)  USGLPT: RESEND MUNGED PAGES, CLI COMMUNICATION WITH SPOOLR FOR STATUS
+(11)  OPTIMIZE SCAN-LINE, XGP-SCAN, SCAN-XGP-LINE, - WRITE IN LAP??
+(12) * FILE DELETION DEFAULTS (SEE BELOW).
+(13) * IMPLEMENT SKIP COMMANDS (ESP. ASCII, ARDS)
+(14) * DOCUMENTATION!!!
+(15) * AVOID USING SPLNCH WHEN MAILER IS FIXED; CHECK FOR EXISTING SPOOLR.
+(16) * USE REPEAT COMMANDS IN SCAN-LINE AND ASCII 12 LINEFEEDS.
+
+HARDWARE:
+(1) BRING OUT SYSTEM RESET FLAG
+(2) BRING OUT FAN-FOLD/ROLL FLAG
+(3) PAPER CUTTER ADJUSTMENT
+(4) MAINTENANCE LIST (I.E. THINGS WE SHOULD DO REGULARLY, LIKE CLEAR THE PAPER CUTTER OF
+    FINE CUTTINGS, CLEANING THE TONER HEAD, WATERING THE CRYSTALS, ETC.)
+
+* - EASY
+
+IMPLEMENT - @ (INDIRECT COMMAND FILE),
+
+DEFAULT FILE TYPES BY FILE NAMES: 
+FIRST:	.PLOT. - ARDS,
+SECOND:
+  ARDS - ARDS, PIC
+  TEK - TEK, TEKPLT
+  DPLT - PLT, DPLT
+  XGP - TXJOUT, @XGP, XPG
+  XGP-IMAGE - SCN
+  BIT IMAGE - BIN, IMAGE
+  8BIT - TTY, 8BIT
+
+DEFAULT FILE TYPES BY FILE CONTENTS (ORDER IMPORANT):
+FIRST WORD: 13 - DPLT
+FIRST CHAR: 35 - ARDS, 33 - TEK
+FIRST WORD (VARIOUS XGP COMMANDS): XGP
+LAST WORD: 12,, - XGP-IMAGE
+FIRST WORD LOW BITS: 7 - 8BIT (TTY), 1 = IMAGE
+
+DELETE FILE DEFAULTS:
+BY FILE TYPE: DPLT, XGP-IMAGE
+BY FILE NAME: .PLOT., @XGP, 
+QUESTIONABLE: TXJOUT, IMAGE, (XGP,ARDS,TEK,TEKPLT,BIN,IMAGE,TTY)
+
+OUTPUT DEFAULTING:
+OUTPUT SPEC DEFAULTS TO XGP?, ETC.
