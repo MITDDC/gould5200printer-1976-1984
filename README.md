@@ -20,7 +20,7 @@ A list of all the tape images and their paths in the ToTS collection that these 
 ### [ITSarchivefilelist.txt](../main/ITSarchivefilelist.txt)
 A list of all the ITS archive files and their paths in this repo.
 ## Preferred Citation
-[filename], Gould 5200 printer files, 1976-1984, Massachusetts Institute of Technology, Tapes of Tech Square (ToTS) collection, MC-0741. Massachusetts Institute of Technology, Department of Distinctive Collections, Cambridge, Massachusetts.
+[filename], Gould 5200 printer files, 1976-1984, Massachusetts Institute of Technology, Tapes of Tech Square (ToTS) collection, MC-0741. Massachusetts Institute of Technology, Department of Distinctive Collections, Cambridge, Massachusetts. [swh:1:dir:26bf673d2dc41a297f1f6179dd749a65ac6f209a](https://archive.softwareheritage.org/swh:1:dir:26bf673d2dc41a297f1f6179dd749a65ac6f209a)
 ## Rights
 To the extent that MIT holds rights in these files, they are released under the terms of the [MIT License](https://opensource.org/licenses/MIT). See the `LICENSE` file for more information. Any questions about permissions should be directed to [permissions-lib@mit.edu](mailto:permissions-lib@mit.edu)
 ## Acknowledgements
