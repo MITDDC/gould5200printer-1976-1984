@@ -1,4 +1,4 @@
-7006697/glpt/arc.1
+7006697/glpt/arc.2
 7007940/glpspl/ar1.oglpt
 7007940/glpspl/arc.ooglpt
 7008049/glpt/arc.2

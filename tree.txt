@@ -1,4 +1,4 @@
-[Aug 12 12:14]  gould5200printer
+[Aug 13 10:22]  gould5200printer/
 ├── [Aug  8 16:49]  1100221
 │   └── [Aug  8 16:49]  _glpr_
 │       └── [Jun  8  1979]  -read-.-this-
@@ -74,7 +74,15 @@
 │   │   └── [Feb 28  1979]  ts.glpspl
 │   └── [Aug  8 16:49]  glpt
 │       └── [Feb 22  1979]  bug.r11
-├── [Aug  8 16:49]  7006697
+├── [Aug 13 15:00]  7006697
+│   ├── [Aug 13 15:03]  arc.2
+│   │   ├── [Feb 21  1977]  echo.8
+│   │   ├── [Feb 19  1977]  echo.bin
+│   │   ├── [Apr 27  1976]  floadr.13
+│   │   ├── [Nov  2  1976]  gould.problm
+│   │   ├── [Feb 28  1977]  gtpl.15
+│   │   ├── [Nov  2  1976]  hw.memo
+│   │   └── [Dec  9  1976]  nlpt.2
 │   └── [Aug  8 16:49]  glpt
 │       ├── [Jun 28  1978]  arc.2
 │       ├── [Jun 28  1978]  gbug.mail
@@ -426,4 +434,4 @@
         ├── [Aug 23  1976]  usglpt.bin
         └── [Oct 17  1976]  xgp.ofasl
 
-69 directories, 357 files
+70 directories, 364 files
