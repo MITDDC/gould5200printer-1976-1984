@@ -18,6 +18,7 @@ A file tree listing the files in the [gould5200printer](../main/gould5200printer
 ### [tapeimagelist.txt](../main/tapeimagelist.txt)
 A list of all the tape images and their paths in the ToTS collection that these files came from.
 ### [ITSarchivefilelist.txt](../main/ITSarchivefilelist.txt)
+A list of all the ITS archive files and their paths in this repo.
 ## Preferred Citation
 [filename], Gould 5200 printer files, 1976-1984, Massachusetts Institute of Technology, Tapes of Tech Square (ToTS) collection, MC-0741. Massachusetts Institute of Technology, Department of Distinctive Collections, Cambridge, Massachusetts.
 ## Rights
