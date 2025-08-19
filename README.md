@@ -8,7 +8,7 @@ Files were extracted from the tape images using the [itstar program](https://git
 
 [7 files are ITS archive files](../main/ITSarchivefilelist.txt) within this extracted set. Digital Archivist, Joe Carrano, extracted the contents of these files into directories of the same name, one level up from their location using the [itsarc](https://github.com/larsbrinkhoff/pdp10-its-disassembler/blob/master/itsarc.c) program.
 ### [codemeta.json](../main/codemeta.json)
-This file is metadata about the Micro-Planner files, using the [CodeMeta Project](https://codemeta.github.io/) schema.
+This file is metadata about the Gould 5200 printer files, using the [CodeMeta Project](https://codemeta.github.io/) schema.
 ### [LICENSE](../main/LICENSE)
 This file describes the details about the rights to these files. See [Rights](#rights) for additional information.
 ### [README.md](../main/README.md)
